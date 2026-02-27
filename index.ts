@@ -3,22 +3,22 @@ import { cerebrasServices } from './services/cerebras';
 import { openrouterServices } from './services/openrouter';
 import { mistralService } from './services/mistral';
 import { codestralService } from './services/codestral';
-import { geminiService } from './services/gemini';
+import { geminiServices } from './services/gemini';
 import { cohereService } from './services/cohere';
 import { nvidiaService } from './services/nvidia';
-import type { AIService, ChatMessage } from './types';
+import type { AIService, ChatRequest } from './types';
 
 // ─── Service pool ────────────────────────────────────────────────────────────
 
 const allServices: AIService[] = [
-  ...groqServices,
-  ...openrouterServices,
-  ...cerebrasServices,
-  mistralService,
-  codestralService,
-  geminiService,
-  cohereService,
-  nvidiaService,
+  ...groqServices,        // 12 models (7 with tools)
+  ...openrouterServices,  // 24 models (12 with tools)
+  ...cerebrasServices,    //  3 models
+  ...geminiServices,      //  7 models (Gemini 3/2.5 Flash + Gemma 3)
+  mistralService,         //  1 model  (tools ✅)
+  codestralService,       //  1 model  (tools ✅)
+  cohereService,          //  1 model
+  nvidiaService,          //  1 model  (tools ✅)
 ];
 
 // ─── State tracking ──────────────────────────────────────────────────────────
@@ -40,19 +40,22 @@ const states: ServiceState[] = allServices.map(s => ({
 
 let preferred = 0;
 
-function getService(): ServiceState {
+function getService(requireTools: boolean): ServiceState {
   const now = Date.now();
+
   for (let i = 0; i < states.length; i++) {
     const s = states[(preferred + i) % states.length]!;
-    if (!s.disabled && s.cooldownUntil <= now) {
+    if (s.disabled) continue;
+    if (requireTools && !s.service.supportsTools) continue;
+    if (s.cooldownUntil <= now) {
       preferred = (preferred + i) % states.length;
       return s;
     }
   }
-  // All in cooldown — pick soonest
-  return states
-    .filter(s => !s.disabled)
-    .reduce((a, b) => (a.cooldownUntil < b.cooldownUntil ? a : b)) as ServiceState;
+
+  // All eligible in cooldown — pick soonest
+  const eligible = states.filter(s => !s.disabled && (!requireTools || s.service.supportsTools));
+  return eligible.reduce((a, b) => (a.cooldownUntil < b.cooldownUntil ? a : b)) as ServiceState;
 }
 
 function handleServiceError(state: ServiceState, err: any): void {
@@ -66,6 +69,11 @@ function handleServiceError(state: ServiceState, err: any): void {
   } else if (status === 402) {
     state.cooldownUntil = Date.now() + HOUR_MS;
     console.warn(`[${name}] Quota exceeded → cooldown 1 h`);
+  } else if (status === 413) {
+    // Payload too large — model can't handle this context size.
+    // Cool down for 1 hour; payload may be smaller later.
+    state.cooldownUntil = Date.now() + HOUR_MS;
+    console.warn(`[${name}] Payload too large → cooldown 1 h`);
   } else if (status === 401) {
     state.disabled = true;
     console.warn(`[${name}] Unauthorized → permanently disabled`);
@@ -80,72 +88,121 @@ function handleServiceError(state: ServiceState, err: any): void {
   preferred = (idx + 1) % states.length;
 }
 
-// ─── OpenAI-compatible helpers ────────────────────────────────────────────────
+// ─── CORS ────────────────────────────────────────────────────────────────────
+
+const CORS: Record<string, string> = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+};
+
+function withCors(headers: Record<string, string> = {}): Record<string, string> {
+  return { ...CORS, ...headers };
+}
+
+// ─── Auth ─────────────────────────────────────────────────────────────────────
+
+const API_SECRET = process.env.API_SECRET;
+
+function isAuthorized(req: Request): boolean {
+  if (!API_SECRET) return true; // auth disabled
+  const header = req.headers.get('Authorization') ?? '';
+  return header === `Bearer ${API_SECRET}`;
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+const startTime = Date.now();
 
 function genId(): string {
   return `chatcmpl-${Math.random().toString(36).slice(2, 11)}`;
 }
 
-/**
- * Wraps our raw text stream into OpenAI SSE format:
- *   data: { ...chunk }\n\n
- *   data: [DONE]\n\n
- */
-async function* toOpenAISSE(
+/** Wraps a stream to catch mid-stream errors and emit a proper SSE error before [DONE]. */
+async function* withErrorBoundary(
   source: AsyncIterable<string>,
-  id: string,
-  model: string
+  serviceName: string
 ): AsyncGenerator<string> {
-  const created = Math.floor(Date.now() / 1000);
-  const base = { id, object: 'chat.completion.chunk', created, model };
-
-  // Opening delta with role
-  yield `data: ${JSON.stringify({
-    ...base,
-    choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }],
-  })}\n\n`;
-
-  for await (const text of source) {
-    if (!text) continue;
+  try {
+    yield* source;
+  } catch (err: any) {
+    const msg = err?.message ?? String(err);
+    console.error(`[${serviceName}] Mid-stream error: ${msg}`);
     yield `data: ${JSON.stringify({
-      ...base,
-      choices: [{ index: 0, delta: { content: text }, finish_reason: null }],
-    })}\n\n`;
+      error: { message: msg, type: 'stream_error' }
+    })}
+
+`;
+    yield 'data: [DONE]\n\n';
+  }
+}
+
+/**
+ * Collects a stream of SSE lines and assembles a complete message
+ * (including tool_calls for agent use cases).
+ */
+async function collectSSE(source: AsyncIterable<string>): Promise<{
+  content: string;
+  tool_calls: any[];
+  finish_reason: string;
+}> {
+  let content = '';
+  const toolCallMap: Record<number, any> = {};
+  let finish_reason = 'stop';
+
+  for await (const line of source) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('data: ') || trimmed === 'data: [DONE]') continue;
+
+    try {
+      const chunk = JSON.parse(trimmed.slice(6));
+      const choice = chunk.choices?.[0];
+      if (!choice) continue;
+
+      if (choice.finish_reason) finish_reason = choice.finish_reason;
+
+      const delta = choice.delta;
+      if (delta?.content) content += delta.content;
+
+      if (delta?.tool_calls) {
+        for (const tc of delta.tool_calls) {
+          const idx = tc.index ?? 0;
+          if (!toolCallMap[idx]) {
+            toolCallMap[idx] = {
+              id: tc.id ?? '',
+              type: 'function',
+              function: { name: '', arguments: '' },
+            };
+          }
+          if (tc.id) toolCallMap[idx].id = tc.id;
+          if (tc.function?.name) toolCallMap[idx].function.name += tc.function.name;
+          if (tc.function?.arguments) toolCallMap[idx].function.arguments += tc.function.arguments;
+        }
+      }
+    } catch { /* non-JSON SSE lines, skip */ }
   }
 
-  // Closing delta
-  yield `data: ${JSON.stringify({
-    ...base,
-    choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-  })}\n\n`;
-
-  yield 'data: [DONE]\n\n';
+  const tool_calls = Object.values(toolCallMap);
+  return { content, tool_calls, finish_reason };
 }
 
-/** Collects all chunks into a single string (for non-streaming responses). */
-async function collectStream(source: AsyncIterable<string>): Promise<string> {
-  let out = '';
-  for await (const chunk of source) out += chunk;
-  return out;
-}
+// ─── Service dispatchers ──────────────────────────────────────────────────────
 
-/**
- * Attempts to get a response from up to MAX_RETRIES services.
- * Returns the raw text stream and the chosen service name.
- */
 const MAX_RETRIES = 3;
 
 async function tryServices(
-  messages: ChatMessage[]
+  request: ChatRequest,
+  id: string
 ): Promise<{ stream: AsyncIterable<string>; serviceName: string }> {
+  const requireTools = !!(request.tools?.length);
   const errors: string[] = [];
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    const state = getService();
+    const state = getService(requireTools);
     console.log(`[Attempt ${attempt}/${MAX_RETRIES}] Using ${state.service.name}`);
 
     try {
-      const stream = await state.service.chat(messages);
+      const stream = await state.service.chat(request, id);
       return { stream, serviceName: state.service.name };
     } catch (err: any) {
       const msg = err?.message ?? String(err);
@@ -158,12 +215,10 @@ async function tryServices(
   throw Object.assign(new Error('All retries failed'), { details: errors });
 }
 
-/**
- * Uses one specific service by name, respecting its current cooldown/disabled state.
- */
 async function trySpecificService(
   modelName: string,
-  messages: ChatMessage[]
+  request: ChatRequest,
+  id: string
 ): Promise<{ stream: AsyncIterable<string>; serviceName: string }> {
   const state = states.find(s => s.service.name === modelName);
 
@@ -173,14 +228,12 @@ async function trySpecificService(
       { code: 'model_not_found', httpStatus: 404 }
     );
   }
-
   if (state.disabled) {
     throw Object.assign(
-      new Error(`Model '${modelName}' is permanently disabled (auth error or model removed).`),
+      new Error(`Model '${modelName}' is permanently disabled.`),
       { code: 'model_disabled', httpStatus: 503 }
     );
   }
-
   const now = Date.now();
   if (state.cooldownUntil > now) {
     const retryAfter = Math.ceil((state.cooldownUntil - now) / 1000);
@@ -192,11 +245,9 @@ async function trySpecificService(
 
   console.log(`[Specific] Using ${modelName}`);
   try {
-    const stream = await state.service.chat(messages);
+    const stream = await state.service.chat(request, id);
     return { stream, serviceName: state.service.name };
   } catch (err: any) {
-    const msg = err?.message ?? String(err);
-    console.error(`[${modelName}] Error: ${msg}`);
     handleServiceError(state, err);
     throw err;
   }
@@ -211,11 +262,59 @@ const server = Bun.serve({
   async fetch(req) {
     const { pathname } = new URL(req.url);
 
-    // ── Status ────────────────────────────────────────────────────────────────
+    // ── CORS preflight ────────────────────────────────────────────────────────
+    if (req.method === 'OPTIONS') {
+      return new Response(null, { status: 204, headers: withCors() });
+    }
+
+    // ── Auth check (skip /health) ─────────────────────────────────────────────
+    if (pathname !== '/health' && !isAuthorized(req)) {
+      return new Response(
+        JSON.stringify({ error: { message: 'Unauthorized', type: 'auth_error' } }),
+        { status: 401, headers: withCors({ 'Content-Type': 'application/json' }) }
+      );
+    }
+
+    // ── Health ───────────────────────────────────────────────────────────────
+    if (req.method === 'GET' && pathname === '/health') {
+      const now = Date.now();
+      const available = states.filter(s => !s.disabled && s.cooldownUntil <= now).length;
+      return new Response(JSON.stringify({
+        status: 'ok',
+        uptime_seconds: Math.floor((now - startTime) / 1000),
+        services: { total: states.length, available, disabled: states.filter(s => s.disabled).length },
+      }), { headers: withCors({ 'Content-Type': 'application/json' }) });
+    }
+
+    // ── Admin reset ─────────────────────────────────────────────────────────
+    if (req.method === 'POST' && pathname.startsWith('/admin/reset')) {
+      const modelName = decodeURIComponent(pathname.replace('/admin/reset/', '').replace('/admin/reset', '').trim());
+      if (modelName) {
+        const state = states.find(s => s.service.name === modelName);
+        if (!state) {
+          return new Response(JSON.stringify({ error: `Model '${modelName}' not found` }),
+            { status: 404, headers: withCors({ 'Content-Type': 'application/json' }) });
+        }
+        state.cooldownUntil = 0;
+        state.disabled = false;
+        console.log(`[Admin] Reset ${modelName}`);
+        return new Response(JSON.stringify({ ok: true, reset: modelName }),
+          { headers: withCors({ 'Content-Type': 'application/json' }) });
+      }
+      // Reset all
+      states.forEach(s => { s.cooldownUntil = 0; s.disabled = false; });
+      preferred = 0;
+      console.log('[Admin] Reset ALL services');
+      return new Response(JSON.stringify({ ok: true, reset: 'all', count: states.length }),
+        { headers: withCors({ 'Content-Type': 'application/json' }) });
+    }
+
+    // ── Status ───────────────────────────────────────────────────────────────
     if (req.method === 'GET' && pathname === '/status') {
       const now = Date.now();
       const report = states.map(s => ({
         name: s.service.name,
+        supportsTools: s.service.supportsTools,
         status: s.disabled
           ? 'disabled'
           : s.cooldownUntil > now
@@ -223,90 +322,89 @@ const server = Bun.serve({
             : 'available',
       }));
       return new Response(JSON.stringify(report, null, 2), {
-        headers: { 'Content-Type': 'application/json' },
+        headers: withCors({ 'Content-Type': 'application/json' }),
       });
     }
 
-    // ── Models list (OpenAI-compatible) ───────────────────────────────────────
+    // ── Models list ──────────────────────────────────────────────────────────
     if (req.method === 'GET' && pathname === '/v1/models') {
       const now = Date.now();
-      const data = states
-        .filter(s => !s.disabled)
-        .map(s => ({
-          id: s.service.name,
-          object: 'model',
-          created: Math.floor(now / 1000),
-          owned_by: s.service.name.split('/')[0],
-          status: s.cooldownUntil > now ? 'cooldown' : 'available',
-        }));
+      const data = states.filter(s => !s.disabled).map(s => ({
+        id: s.service.name,
+        object: 'model',
+        created: Math.floor(now / 1000),
+        owned_by: s.service.name.split('/')[0],
+        supports_tools: s.service.supportsTools,
+        status: s.cooldownUntil > now ? 'cooldown' : 'available',
+      }));
       return new Response(JSON.stringify({ object: 'list', data }, null, 2), {
-        headers: { 'Content-Type': 'application/json' },
+        headers: withCors({ 'Content-Type': 'application/json' }),
       });
     }
 
-    // ── OpenAI-compatible chat completions ────────────────────────────────────
+    // ── Chat completions ─────────────────────────────────────────────────────
     if (req.method === 'POST' &&
       (pathname === '/v1/chat/completions' || pathname === '/chat')) {
 
-      let body: { messages: ChatMessage[]; stream?: boolean; model?: string };
+      let body: ChatRequest & { stream?: boolean; model?: string; stream_options?: any };
       try {
-        body = await req.json() as { messages: ChatMessage[]; stream?: boolean; model?: string };
+        body = await req.json() as ChatRequest & { stream?: boolean; model?: string; stream_options?: any };
       } catch {
-        return new Response(JSON.stringify({ error: { message: 'Invalid JSON body', type: 'invalid_request_error' } }), {
-          status: 400,
-          headers: { 'Content-Type': 'application/json' },
-        });
+        return new Response(
+          JSON.stringify({ error: { message: 'Invalid JSON body', type: 'invalid_request_error' } }),
+          { status: 400, headers: withCors({ 'Content-Type': 'application/json' }) }
+        );
       }
 
-      const { messages, stream: wantsStream = true, model = 'auto' } = body;
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { stream: wantsStream = true, model = 'auto', stream_options: _so, ...chatRequest } = body;
       const id = genId();
-      // 'auto' (or empty/null) → sticky router; anything else → specific model
       const useAuto = !model || model === 'auto';
+
+      const hasTools = !!(chatRequest.tools?.length);
+      if (hasTools) {
+        console.log(`[Tools] Request includes ${chatRequest.tools!.length} tool(s)`);
+      }
 
       try {
         const { stream, serviceName } = useAuto
-          ? await tryServices(messages)
-          : await trySpecificService(model, messages);
+          ? await tryServices(chatRequest, id)
+          : await trySpecificService(model, chatRequest, id);
 
-        // ── Streaming response ─────────────────────────────────────────────
+        // ── Streaming ──────────────────────────────────────────────────────
         if (wantsStream) {
-          return new Response(toOpenAISSE(stream, id, serviceName), {
-            headers: {
+          return new Response(withErrorBoundary(stream, serviceName), {
+            headers: withCors({
               'Content-Type': 'text/event-stream',
               'Cache-Control': 'no-cache',
               'Connection': 'keep-alive',
               'X-Service': serviceName,
-            },
+            }),
           });
         }
 
-        // ── Non-streaming response ─────────────────────────────────────────
-        const content = await collectStream(stream);
+        // ── Non-streaming ──────────────────────────────────────────────────
+        const { content, tool_calls, finish_reason } = await collectSSE(stream);
         const created = Math.floor(Date.now() / 1000);
+
+        const message: any = { role: 'assistant', content: content || null };
+        if (tool_calls.length) message.tool_calls = tool_calls;
+
         return new Response(
           JSON.stringify({
             id,
             object: 'chat.completion',
             created,
             model: serviceName,
-            choices: [{
-              index: 0,
-              message: { role: 'assistant', content },
-              finish_reason: 'stop',
-            }],
+            choices: [{ index: 0, message, finish_reason }],
             usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
           }),
-          {
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Service': serviceName,
-            },
-          }
+          { headers: withCors({ 'Content-Type': 'application/json', 'X-Service': serviceName }) }
         );
 
       } catch (err: any) {
         const httpStatus = err?.httpStatus ?? 502;
-        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        const headers = withCors({ 'Content-Type': 'application/json' });
         if (err?.retryAfter) headers['Retry-After'] = String(err.retryAfter);
 
         return new Response(
@@ -322,10 +420,13 @@ const server = Bun.serve({
       }
     }
 
-    return new Response('Not found', { status: 404 });
+    return new Response(JSON.stringify({ error: 'Not found' }), {
+      status: 404,
+      headers: withCors({ 'Content-Type': 'application/json' }),
+    });
   },
 });
 
 console.log(`Server running on ${server.url}`);
-console.log(`Services: ${states.length} total, ${states.filter(s => !s.disabled).length} enabled`);
-console.log(`OpenAI-compatible endpoint: ${server.url}v1/chat/completions`);
+console.log(`Services: ${states.length} total | ${states.filter(s => !s.disabled).length} enabled | ${states.filter(s => s.service.supportsTools).length} support tools`);
+console.log(`OpenAI-compatible: ${server.url}v1/chat/completions`);

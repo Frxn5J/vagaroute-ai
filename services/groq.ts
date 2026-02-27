@@ -1,43 +1,55 @@
 import { Groq } from 'groq-sdk';
-import type { AIService, ChatMessage } from '../types';
+import type { AIService, ChatRequest } from '../types';
 
 const groq = new Groq();
 
-// Free chat-capable models on Groq (excludes guard/prompt-guard classifiers and TTS models)
-const MODELS = [
-  'moonshotai/kimi-k2-instruct',
-  'moonshotai/kimi-k2-instruct-0905',
-  'groq/compound',
-  'groq/compound-mini',
-  'llama-3.3-70b-versatile',
-  'meta-llama/llama-4-maverick-17b-128e-instruct',
-  'meta-llama/llama-4-scout-17b-16e-instruct',
-  'openai/gpt-oss-120b',
-  'openai/gpt-oss-20b',
-  'qwen/qwen3-32b',
-  // Legacy models (still available on Groq)
-  'mixtral-8x7b-32768',
-  'deepseek-r1-distill-llama-70b',
+// Per-model tool calling support on Groq
+// Not all models support function/tool calling — mark explicitly
+const MODELS: { id: string; supportsTools: boolean }[] = [
+  // ✅ Supports tool calling
+  { id: 'groq/compound', supportsTools: true },
+  { id: 'groq/compound-mini', supportsTools: true },
+  { id: 'llama-3.3-70b-versatile', supportsTools: true },
+  { id: 'meta-llama/llama-4-maverick-17b-128e-instruct', supportsTools: true },
+  { id: 'meta-llama/llama-4-scout-17b-16e-instruct', supportsTools: true },
+  { id: 'qwen/qwen3-32b', supportsTools: true },
+  { id: 'mixtral-8x7b-32768', supportsTools: true },
+  // ❌ No tool calling support (or too small context for tools)
+  { id: 'moonshotai/kimi-k2-instruct', supportsTools: false },
+  { id: 'moonshotai/kimi-k2-instruct-0905', supportsTools: false },
+  { id: 'openai/gpt-oss-120b', supportsTools: false },
+  { id: 'openai/gpt-oss-20b', supportsTools: false },
+  { id: 'deepseek-r1-distill-llama-70b', supportsTools: false },
 ];
 
-function createGroqService(model: string): AIService {
+function createGroqService({ id: model, supportsTools }: { id: string; supportsTools: boolean }): AIService {
   return {
     name: `Groq/${model}`,
-    async chat(messages: ChatMessage[]) {
+    supportsTools,
+    async chat(request: ChatRequest, id: string) {
+      const {
+        messages, tools, tool_choice,
+        temperature = 0.6, max_tokens = 4096, top_p = 1,
+      } = request;
+
       const stream = await groq.chat.completions.create({
-        messages,
+        messages: messages as any,
         model,
-        temperature: 0.6,
-        max_completion_tokens: 4096,
-        top_p: 1,
+        temperature,
+        max_completion_tokens: max_tokens,
+        top_p,
         stream: true,
         stop: null,
+        // Only pass tools if this model supports them
+        ...(supportsTools && tools?.length && { tools }),
+        ...(supportsTools && tool_choice !== undefined && { tool_choice }),
       });
 
       return (async function* () {
         for await (const chunk of stream) {
-          yield chunk.choices[0]?.delta?.content || '';
+          yield `data: ${JSON.stringify({ ...chunk, id, model: `Groq/${model}` })}\n\n`;
         }
+        yield 'data: [DONE]\n\n';
       })();
     },
   };

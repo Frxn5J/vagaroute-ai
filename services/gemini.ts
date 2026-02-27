@@ -1,37 +1,85 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import type { AIService, ChatMessage } from '../types';
+import type { AIService, ChatRequest } from '../types';
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
 
-export const geminiService: AIService = {
-    name: 'Gemini',
-    async chat(messages: ChatMessage[]) {
-        const systemInstruction = messages.find(m => m.role === 'system')?.content;
-        const conversationMessages = messages.filter(m => m.role !== 'system');
+// Free models available in Google AI Studio
+// Note: Gemini's function calling uses a different schema than OpenAI's,
+// requiring non-trivial conversion. Marked supportsTools: false until implemented.
+const MODELS: { id: string; supportsTools: boolean; maxOutputTokens: number }[] = [
+    // Gemini Flash (250K TPM, 5 req/min, 20 req/day)
+    { id: 'gemini-3.0-flash', supportsTools: false, maxOutputTokens: 8192 },
+    { id: 'gemini-2.5-flash', supportsTools: false, maxOutputTokens: 8192 },
+    { id: 'gemini-2.5-flash-lite', supportsTools: false, maxOutputTokens: 8192 },
+    // Gemma 3 (15K TPM, 30 req/min, 14400 req/day)
+    { id: 'gemma-3-27b-it', supportsTools: false, maxOutputTokens: 8192 },
+    { id: 'gemma-3-12b-it', supportsTools: false, maxOutputTokens: 8192 },
+    { id: 'gemma-3-4b-it', supportsTools: false, maxOutputTokens: 4096 },
+    { id: 'gemma-3-1b-it', supportsTools: false, maxOutputTokens: 2048 },
+];
 
-        const model = genAI.getGenerativeModel({
-            model: 'gemini-2.0-flash',
-            ...(systemInstruction && { systemInstruction }),
-            generationConfig: {
-                temperature: 0.6,
-                maxOutputTokens: 8192,
-            },
-        });
+function createGeminiService({
+    id: modelId,
+    supportsTools,
+    maxOutputTokens,
+}: (typeof MODELS)[number]): AIService {
+    return {
+        name: `Gemini/${modelId}`,
+        supportsTools,
+        async chat(request: ChatRequest, id: string) {
+            const { messages, temperature = 0.6, max_tokens } = request;
+            const created = Math.floor(Date.now() / 1000);
 
-        // Build chat history (all messages except the last one)
-        const history = conversationMessages.slice(0, -1).map(m => ({
-            role: m.role === 'assistant' ? 'model' : 'user',
-            parts: [{ text: m.content }],
-        }));
+            const systemInstruction =
+                messages.find(m => m.role === 'system')?.content ?? undefined;
+            const conversationMessages = messages.filter(m => m.role !== 'system');
 
-        const lastMessage = conversationMessages[conversationMessages.length - 1];
-        const chat = model.startChat({ history });
-        const result = await chat.sendMessageStream(lastMessage?.content ?? '');
+            const model = genAI.getGenerativeModel({
+                model: modelId,
+                ...(systemInstruction && { systemInstruction }),
+                generationConfig: {
+                    temperature,
+                    maxOutputTokens: max_tokens ?? maxOutputTokens,
+                },
+            });
 
-        return (async function* () {
-            for await (const chunk of result.stream) {
-                yield chunk.text();
-            }
-        })();
-    }
-};
+            // Map assistant → model, tool → user (best-effort for non-tool requests)
+            const history = conversationMessages.slice(0, -1).map(m => ({
+                role: m.role === 'assistant' ? 'model' : 'user',
+                parts: [{ text: m.content ?? '' }],
+            }));
+
+            const lastMessage = conversationMessages[conversationMessages.length - 1];
+            const chat = model.startChat({ history });
+            const result = await chat.sendMessageStream(lastMessage?.content ?? '');
+
+            return (async function* () {
+                for await (const chunk of result.stream) {
+                    const text = chunk.text();
+                    if (text) {
+                        yield `data: ${JSON.stringify({
+                            id,
+                            object: 'chat.completion.chunk',
+                            created,
+                            model: `Gemini/${modelId}`,
+                            choices: [{ index: 0, delta: { content: text }, finish_reason: null }],
+                        })}\n\n`;
+                    }
+                }
+                yield `data: ${JSON.stringify({
+                    id,
+                    object: 'chat.completion.chunk',
+                    created,
+                    model: `Gemini/${modelId}`,
+                    choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+                })}\n\n`;
+                yield 'data: [DONE]\n\n';
+            })();
+        },
+    };
+}
+
+export const geminiServices: AIService[] = MODELS.map(createGeminiService);
+
+// Keep singular export for backward compat
+export const geminiService = geminiServices[0]!;

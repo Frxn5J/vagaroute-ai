@@ -1,5 +1,5 @@
 import OpenAI from 'openai';
-import type { AIService, ChatMessage } from '../types';
+import type { AIService, ChatRequest } from '../types';
 
 const client = new OpenAI({
     baseURL: 'https://integrate.api.nvidia.com/v1',
@@ -8,19 +8,28 @@ const client = new OpenAI({
 
 export const nvidiaService: AIService = {
     name: 'NVIDIA NIM',
-    async chat(messages: ChatMessage[]) {
+    supportsTools: true,
+    async chat(request: ChatRequest, id: string) {
+        const {
+            messages, tools, tool_choice,
+            temperature = 0.6, max_tokens = 4096,
+        } = request;
+
         const stream = await client.chat.completions.create({
-            model: 'meta/llama-3.3-70b-instruct',
-            messages,
+            model: 'moonshotai/kimi-k2.5',
+            messages: messages as any,
             stream: true,
-            temperature: 0.6,
-            max_tokens: 4096,
+            temperature,
+            max_tokens,
+            ...(tools?.length && { tools }),
+            ...(tool_choice !== undefined && { tool_choice }),
         });
 
         return (async function* () {
             for await (const chunk of stream) {
-                yield chunk.choices[0]?.delta?.content || '';
+                yield `data: ${JSON.stringify({ ...chunk, id, model: 'NVIDIA NIM' })}\n\n`;
             }
+            yield 'data: [DONE]\n\n';
         })();
-    }
+    },
 };
