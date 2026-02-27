@@ -15,6 +15,10 @@
   },
   "dependencies": {
     "@cerebras/cerebras_cloud_sdk": "^1.59.0",
-    "groq-sdk": "^0.37.0"
+    "@google/generative-ai": "^0.24.1",
+    "@mistralai/mistralai": "^1.14.1",
+    "cohere-ai": "^7.20.0",
+    "groq-sdk": "^0.37.0",
+    "openai": "^6.25.0"
   }
 }
