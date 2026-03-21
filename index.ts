@@ -410,6 +410,96 @@ const server = Bun.serve({
       });
     }
 
+    // ── Audio Transcriptions ──────────────────────────────────────────────────
+    if (req.method === 'POST' && pathname === '/v1/audio/transcriptions') {
+      try {
+        const formData = await req.formData();
+        const file = formData.get('file') as File;
+        if (!file) throw new Error("Falta el campo 'file' en el FormData");
+        
+        const apiKey = process.env.GROQ_API_KEY;
+        if (!apiKey) throw new Error("Falta GROQ_API_KEY en .env para transcripciones");
+        
+        const groqForm = new FormData();
+        groqForm.append('file', file);
+        groqForm.append('model', 'whisper-large-v3'); // or whisper-large-v3-turbo
+
+        const lang = formData.get('language');
+        if (lang) groqForm.append('language', lang);
+        
+        const res = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${apiKey}` },
+          body: groqForm
+        });
+
+        if (!res.ok) throw new Error(`Groq Audio Error: ${await res.text()}`);
+        const data = await res.json();
+        
+        return new Response(JSON.stringify(data), {
+          headers: withCors({ 'Content-Type': 'application/json' })
+        });
+      } catch (err: any) {
+        return new Response(
+          JSON.stringify({ error: { message: err.message } }), 
+          { status: 500, headers: withCors({ 'Content-Type': 'application/json' }) }
+        );
+      }
+    }
+
+    // ── Embeddings ────────────────────────────────────────────────────────────
+    if (req.method === 'POST' && pathname === '/v1/embeddings') {
+      try {
+        const body = await req.json() as any;
+        const input = body.input;
+        const texts = Array.isArray(input) ? input : [input];
+
+        if (process.env.MISTRAL_API_KEY) {
+          const res = await fetch('https://api.mistral.ai/v1/embeddings', {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${process.env.MISTRAL_API_KEY}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ input: texts, model: 'mistral-embed' })
+          });
+          if (res.ok) {
+            return new Response(await res.text(), { headers: withCors({ 'Content-Type': 'application/json' }) });
+          }
+        }
+        
+        // Fallback to Cohere if Mistral fails or is missing
+        if (process.env.COHERE_API_KEY) {
+          const res = await fetch('https://api.cohere.com/v1/embed', {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${process.env.COHERE_API_KEY}`,
+              'Content-Type': 'application/json',
+              'Accept': 'application/json'
+            },
+            body: JSON.stringify({ texts, model: 'embed-multilingual-v3.0', input_type: 'search_document' })
+          });
+          if (res.ok) {
+            const dataHash = await res.json() as any;
+            const openAiFormat = {
+              object: "list",
+              data: dataHash.embeddings.map((emb: number[], i: number) => ({ object: "embedding", embedding: emb, index: i })),
+              model: "cohere/embed-multilingual",
+              usage: { prompt_tokens: dataHash.meta?.billed_units?.input_tokens ?? 0, total_tokens: dataHash.meta?.billed_units?.input_tokens ?? 0 }
+            };
+            return new Response(JSON.stringify(openAiFormat), { headers: withCors({ 'Content-Type': 'application/json' }) });
+          }
+        }
+
+        throw new Error("No hay proveedores de Embeddings disponibles (Asegúrate de tener MISTRAL_API_KEY o COHERE_API_KEY)");
+      } catch (err: any) {
+        return new Response(
+          JSON.stringify({ error: { message: err.message } }), 
+          { status: 500, headers: withCors({ 'Content-Type': 'application/json' }) }
+        );
+      }
+    }
+
     // ── Models list ──────────────────────────────────────────────────────────
     if (req.method === 'GET' && pathname === '/v1/models') {
       const now = Date.now();
