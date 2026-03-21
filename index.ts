@@ -410,23 +410,79 @@ const server = Bun.serve({
       });
     }
 
+    // ── Image Generation ──────────────────────────────────────────────────────
+    if (req.method === 'POST' && pathname === '/v1/images/generations') {
+      try {
+        const body = await req.json() as any;
+        if (!body.prompt) throw new Error("Falta el parámetro 'prompt' para generar la imagen");
+        
+        const apiKey = process.env.POLLINATIONS_API_KEY?.trim();
+        const targetModel = body.model && body.model !== 'auto' ? body.model : 'flux';
+        
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json'
+        };
+        if (apiKey) {
+          headers['Authorization'] = `Bearer ${apiKey}`;
+        }
+        
+        const originalResponseFormat = body.response_format || 'url';
+        const res = await fetch('https://gen.pollinations.ai/v1/images/generations', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            prompt: body.prompt,
+            model: targetModel,
+            n: body.n || 1,
+            size: body.size || '1024x1024',
+            quality: body.quality,
+            response_format: 'b64_json' // Siempre pedimos RAW para garantizar Privacidad Cero-Trust
+          })
+        });
+
+        if (!res.ok) throw new Error(`Pollinations API Error: ${await res.text()}`);
+        
+        const json = await res.json() as any;
+        
+        // Regresamos al estándar OpenAI original: si el cliente pedía 'url' (default), 
+        // le inyectamos la Data URI en Base64 para que su Frontend la dibuje. Cero llaves filtradas.
+        if (originalResponseFormat === 'url' && json.data && Array.isArray(json.data)) {
+          json.data = json.data.map((item: any) => {
+            if (item.b64_json) {
+              item.url = `data:image/jpeg;base64,${item.b64_json}`;
+              delete item.b64_json;
+            }
+            return item;
+          });
+        }
+        
+        return new Response(JSON.stringify(json), {
+          headers: withCors({ 'Content-Type': 'application/json' })
+        });
+      } catch (err: any) {
+        return new Response(JSON.stringify({ error: { message: err.message } }), 
+          { status: 400, headers: withCors({ 'Content-Type': 'application/json' }) }
+        );
+      }
+    }
+
     // ── Audio Transcriptions ──────────────────────────────────────────────────
     if (req.method === 'POST' && pathname === '/v1/audio/transcriptions') {
       try {
         const formData = await req.formData();
         const file = formData.get('file') as File;
         if (!file) throw new Error("Falta el campo 'file' en el FormData");
-        
+
         const apiKey = process.env.GROQ_API_KEY;
         if (!apiKey) throw new Error("Falta GROQ_API_KEY en .env para transcripciones");
-        
+
         const groqForm = new FormData();
         groqForm.append('file', file);
         groqForm.append('model', 'whisper-large-v3'); // or whisper-large-v3-turbo
 
         const lang = formData.get('language');
         if (lang) groqForm.append('language', lang);
-        
+
         const res = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
           method: 'POST',
           headers: { Authorization: `Bearer ${apiKey}` },
@@ -435,13 +491,13 @@ const server = Bun.serve({
 
         if (!res.ok) throw new Error(`Groq Audio Error: ${await res.text()}`);
         const data = await res.json();
-        
+
         return new Response(JSON.stringify(data), {
           headers: withCors({ 'Content-Type': 'application/json' })
         });
       } catch (err: any) {
         return new Response(
-          JSON.stringify({ error: { message: err.message } }), 
+          JSON.stringify({ error: { message: err.message } }),
           { status: 500, headers: withCors({ 'Content-Type': 'application/json' }) }
         );
       }
@@ -467,7 +523,7 @@ const server = Bun.serve({
             return new Response(await res.text(), { headers: withCors({ 'Content-Type': 'application/json' }) });
           }
         }
-        
+
         // Fallback to Cohere if Mistral fails or is missing
         if (process.env.COHERE_API_KEY) {
           const res = await fetch('https://api.cohere.com/v1/embed', {
@@ -494,7 +550,7 @@ const server = Bun.serve({
         throw new Error("No hay proveedores de Embeddings disponibles (Asegúrate de tener MISTRAL_API_KEY o COHERE_API_KEY)");
       } catch (err: any) {
         return new Response(
-          JSON.stringify({ error: { message: err.message } }), 
+          JSON.stringify({ error: { message: err.message } }),
           { status: 500, headers: withCors({ 'Content-Type': 'application/json' }) }
         );
       }
@@ -508,7 +564,7 @@ const server = Bun.serve({
         { id: 'img', object: 'model', created: Math.floor(now / 1000), owned_by: 'system', supports_tools: false, status: 'available' },
         { id: 'tools', object: 'model', created: Math.floor(now / 1000), owned_by: 'system', supports_tools: true, status: 'available' },
       ];
-      
+
       const data = states.filter(s => !s.disabled).map(s => ({
         id: s.service.name,
         object: 'model',
