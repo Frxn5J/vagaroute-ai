@@ -1,57 +1,72 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import type { AIService, ChatRequest } from '../types';
+import type { AIService, ChatRequest, MessageContentPart } from '../types';
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+let genAI: GoogleGenerativeAI | null = null;
+if (process.env.GEMINI_API_KEY) {
+    genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+}
 
-// Free models available in Google AI Studio
-// Note: Gemini's function calling uses a different schema than OpenAI's,
-// requiring non-trivial conversion. Marked supportsTools: false until implemented.
-const MODELS: { id: string; supportsTools: boolean; maxOutputTokens: number }[] = [
-    // Gemini Flash (250K TPM, 5 req/min, 20 req/day)
-    { id: 'gemini-3.0-flash', supportsTools: false, maxOutputTokens: 8192 },
-    { id: 'gemini-2.5-flash', supportsTools: false, maxOutputTokens: 8192 },
-    { id: 'gemini-2.5-flash-lite', supportsTools: false, maxOutputTokens: 8192 },
-    // Gemma 3 (15K TPM, 30 req/min, 14400 req/day)
-    { id: 'gemma-3-27b-it', supportsTools: false, maxOutputTokens: 8192 },
-    { id: 'gemma-3-12b-it', supportsTools: false, maxOutputTokens: 8192 },
-    { id: 'gemma-3-4b-it', supportsTools: false, maxOutputTokens: 4096 },
-    { id: 'gemma-3-1b-it', supportsTools: false, maxOutputTokens: 2048 },
-];
+function parseGeminiContent(content: string | MessageContentPart[] | null): any[] {
+    if (!content) return [{ text: '' }];
+    if (typeof content === 'string') return [{ text: content }];
+    
+    return content.map(part => {
+        if (part.type === 'text') return { text: part.text };
+        if (part.type === 'image_url') {
+            const url = part.image_url.url;
+            if (url.startsWith('data:')) {
+                const match = url.match(/^data:(image\/[a-zA-Z0-9+-]+);base64,(.*)$/);
+                if (match) {
+                    return {
+                        inlineData: {
+                            mimeType: match[1],
+                            data: match[2]
+                        }
+                    };
+                }
+            }
+            return { text: `[Image URL: ${url}]` };
+        }
+        return { text: '' };
+    });
+}
 
 function createGeminiService({
     id: modelId,
     supportsTools,
-    maxOutputTokens,
-}: (typeof MODELS)[number]): AIService {
+    supportsVision,
+}: { id: string; supportsTools: boolean; supportsVision?: boolean }): AIService {
     return {
         name: `Gemini/${modelId}`,
         supportsTools,
+        supportsVision,
         async chat(request: ChatRequest, id: string) {
-            const { messages, temperature = 0.6, max_tokens } = request;
+            if (!genAI) throw new Error("GEMINI_API_KEY missing");
+            const { messages, temperature = 0.6, max_tokens, response_format } = request;
             const created = Math.floor(Date.now() / 1000);
 
             const systemInstruction =
-                messages.find(m => m.role === 'system')?.content ?? undefined;
+                messages.find(m => m.role === 'system')?.content;
             const conversationMessages = messages.filter(m => m.role !== 'system');
 
             const model = genAI.getGenerativeModel({
                 model: modelId,
-                ...(systemInstruction && { systemInstruction }),
+                ...(systemInstruction && { systemInstruction: typeof systemInstruction === 'string' ? systemInstruction : JSON.stringify(systemInstruction) }),
                 generationConfig: {
                     temperature,
-                    maxOutputTokens: max_tokens ?? maxOutputTokens,
+                    maxOutputTokens: max_tokens ?? 8192,
+                    responseMimeType: response_format?.type === 'json_object' ? 'application/json' : 'text/plain',
                 },
             });
 
-            // Map assistant → model, tool → user (best-effort for non-tool requests)
             const history = conversationMessages.slice(0, -1).map(m => ({
                 role: m.role === 'assistant' ? 'model' : 'user',
-                parts: [{ text: m.content ?? '' }],
+                parts: parseGeminiContent(m.content),
             }));
 
             const lastMessage = conversationMessages[conversationMessages.length - 1];
             const chat = model.startChat({ history });
-            const result = await chat.sendMessageStream(lastMessage?.content ?? '');
+            const result = await chat.sendMessageStream(parseGeminiContent(lastMessage?.content ?? ''));
 
             return (async function* () {
                 for await (const chunk of result.stream) {
@@ -79,7 +94,21 @@ function createGeminiService({
     };
 }
 
-export const geminiServices: AIService[] = MODELS.map(createGeminiService);
+export let geminiServices: AIService[] = [];
 
-// Keep singular export for backward compat
-export const geminiService = geminiServices[0]!;
+if (process.env.GEMINI_API_KEY) {
+    try {
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${process.env.GEMINI_API_KEY}`);
+        if (res.ok) {
+            const data = await res.json() as any;
+            geminiServices = data.models
+                .filter((m: any) => m.supportedGenerationMethods.includes("generateContent"))
+                .map((m: any) => m.name.replace('models/', ''))
+                .map((id: string) => createGeminiService({ id, supportsTools: false, supportsVision: !id.includes('gemma') })); // Toolkit parsing still pending for proper integration
+            console.log(`[Gemini] ✅ Loaded ${geminiServices.length} dynamic models`);
+        }
+    } catch (e: any) {
+        console.error(`[Gemini] ❌ Fetch models failed: ${e.message}`);
+    }
+}
+

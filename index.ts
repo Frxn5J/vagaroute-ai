@@ -1,11 +1,11 @@
 import { groqServices } from './services/groq';
 import { cerebrasServices } from './services/cerebras';
 import { openrouterFreeServices, openrouterPaidServices } from './services/openrouter';
-import { mistralService } from './services/mistral';
-import { codestralService } from './services/codestral';
+import { mistralServices } from './services/mistral';
+import { codestralServices } from './services/codestral';
 import { geminiServices } from './services/gemini';
-import { cohereService } from './services/cohere';
-import { nvidiaService } from './services/nvidia';
+import { cohereServices } from './services/cohere';
+import { nvidiaServices } from './services/nvidia';
 import { alibabaServices } from './services/alibaba';
 import type { AIService, ChatRequest } from './types';
 
@@ -13,15 +13,15 @@ import type { AIService, ChatRequest } from './types';
 
 /** Free models — included in automatic rotation */
 const freeServices: AIService[] = [
-  ...groqServices,            // dynamic (7 with tools)
-  ...openrouterFreeServices,  // dynamic free (auto-discovered)
-  ...cerebrasServices,        // 3 models
-  ...geminiServices,          // 7 models (Gemini/Gemma)
-  ...alibabaServices,         // Alibaba DashScope models
-  mistralService,             // tools ✅
-  codestralService,           // tools ✅
-  cohereService,
-  nvidiaService,              // tools ✅
+  ...groqServices,
+  ...openrouterFreeServices,
+  ...cerebrasServices,
+  ...geminiServices,
+  ...alibabaServices,
+  ...mistralServices,
+  ...codestralServices,
+  ...cohereServices,
+  ...nvidiaServices,
 ];
 
 /** Paid OpenRouter models — only used when explicitly requested by name */
@@ -63,38 +63,58 @@ const AGENT_MODEL_NAMES: string[] = (process.env.AGENT_MODELS ?? '')
   .map(s => s.trim())
   .filter(Boolean);
 
+function hasImage(request: ChatRequest): boolean {
+  if (!request.messages) return false;
+  for (const msg of request.messages) {
+    if (Array.isArray(msg.content)) {
+      if (msg.content.some((p: any) => p.type === 'image_url')) return true;
+    }
+  }
+  return false;
+}
+
 /** Returns the sub-pool for the given mode. Paid-only models are always excluded. */
-function getPool(requireTools: boolean): ServiceState[] {
+function getPool(requireTools: boolean, requireVision: boolean): ServiceState[] {
+  let pool = states.filter(s => !s.disabled && !s.paidOnly);
+
   if (requireTools) {
     // Agent pool: use explicit list if configured, else all tool-supporting models
-    return AGENT_MODEL_NAMES.length > 0
-      ? states.filter(s => AGENT_MODEL_NAMES.includes(s.service.name) && s.service.supportsTools && !s.disabled && !s.paidOnly)
-      : states.filter(s => s.service.supportsTools && !s.disabled && !s.paidOnly);
+    if (AGENT_MODEL_NAMES.length > 0) {
+      pool = pool.filter(s => AGENT_MODEL_NAMES.includes(s.service.name) && s.service.supportsTools);
+    } else {
+      pool = pool.filter(s => s.service.supportsTools);
+    }
   }
-  // Chat pool: all non-disabled, non-paid models
-  return states.filter(s => !s.disabled && !s.paidOnly);
+
+  if (requireVision) {
+    pool = pool.filter(s => s.service.supportsVision);
+  }
+
+  return pool;
 }
 
 /** Separate sticky indices for each pool. */
 let preferredChat = 0;
 let preferredAgent = 0;
+let preferredVision = 0;
 
-function getService(requireTools: boolean): ServiceState {
+function getService(requireTools: boolean, requireVision: boolean): ServiceState {
   const now = Date.now();
-  const pool = getPool(requireTools);
+  const pool = getPool(requireTools, requireVision);
 
   if (pool.length === 0) {
     // Fallback: any non-disabled service
     return states.find(s => !s.disabled) ?? states[0]!;
   }
 
-  const pref = requireTools ? preferredAgent : preferredChat;
+  const pref = requireVision ? preferredVision : (requireTools ? preferredAgent : preferredChat);
 
   for (let i = 0; i < pool.length; i++) {
     const s = pool[(pref + i) % pool.length]!;
     if (s.cooldownUntil <= now) {
       const next = (pref + i) % pool.length;
-      if (requireTools) preferredAgent = next;
+      if (requireVision) preferredVision = next;
+      else if (requireTools) preferredAgent = next;
       else preferredChat = next;
       return s;
     }
@@ -120,9 +140,9 @@ function handleServiceError(state: ServiceState, err: any): void {
     // Cool down for 1 hour; payload may be smaller later.
     state.cooldownUntil = Date.now() + HOUR_MS;
     console.warn(`[${name}] Payload too large → cooldown 1 h`);
-  } else if (status === 401) {
+  } else if (status === 401 || status === 403) {
     state.disabled = true;
-    console.warn(`[${name}] Unauthorized → permanently disabled`);
+    console.warn(`[${name}] Unauthorized / Forbidden (Paid Model) → permanently disabled`);
   } else if (status === 404) {
     state.disabled = true;
     console.warn(`[${name}] Model not found → permanently disabled`);
@@ -132,11 +152,12 @@ function handleServiceError(state: ServiceState, err: any): void {
   }
 
   // Advance the preferred index away from the failed service
-  const pool = getPool(state.service.supportsTools);
+  const pool = getPool(state.service.supportsTools, !!state.service.supportsVision);
   const idxInPool = pool.indexOf(state);
   if (idxInPool >= 0) {
     const next = (idxInPool + 1) % pool.length;
-    if (state.service.supportsTools) preferredAgent = next;
+    if (state.service.supportsVision) preferredVision = next;
+    else if (state.service.supportsTools) preferredAgent = next;
     else preferredChat = next;
   }
 }
@@ -177,15 +198,22 @@ async function* withErrorBoundary(
   serviceName: string
 ): AsyncGenerator<string> {
   try {
-    yield* source;
+    for await (const chunk of source) {
+      if (chunk.trim() === 'data: [DONE]') {
+        yield `data: ${JSON.stringify({
+          id: 'chatcmpl-auth', object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: serviceName,
+          choices: [],
+          usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
+        })}\n\n`;
+      }
+      yield chunk;
+    }
   } catch (err: any) {
     const msg = err?.message ?? String(err);
     console.error(`[${serviceName}] Mid-stream error: ${msg}`);
     yield `data: ${JSON.stringify({
       error: { message: msg, type: 'stream_error' }
-    })}
-
-`;
+    })}\n\n`;
     yield 'data: [DONE]\n\n';
   }
 }
@@ -241,18 +269,21 @@ async function collectSSE(source: AsyncIterable<string>): Promise<{
 
 // ─── Service dispatchers ──────────────────────────────────────────────────────
 
-const MAX_RETRIES = 3;
+const MAX_RETRIES = 10;
 
 async function tryServices(
   request: ChatRequest,
-  id: string
+  id: string,
+  forceTools: boolean = false,
+  forceVision: boolean = false
 ): Promise<{ stream: AsyncIterable<string>; serviceName: string }> {
-  const requireTools = !!(request.tools?.length);
+  const requireTools = forceTools || !!(request.tools?.length);
+  const requireVision = forceVision || hasImage(request);
   const errors: string[] = [];
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    const state = getService(requireTools);
-    console.log(`[Attempt ${attempt}/${MAX_RETRIES}] Using ${state.service.name}`);
+    const state = getService(requireTools, requireVision);
+    console.log(`[Attempt ${attempt}/${MAX_RETRIES}] Using ${state.service.name} (Tools: ${requireTools}, Vision: ${requireVision})`);
 
     try {
       const stream = await state.service.chat(request, id);
@@ -382,6 +413,12 @@ const server = Bun.serve({
     // ── Models list ──────────────────────────────────────────────────────────
     if (req.method === 'GET' && pathname === '/v1/models') {
       const now = Date.now();
+      const virtualModels = [
+        { id: 'auto', object: 'model', created: Math.floor(now / 1000), owned_by: 'system', supports_tools: true, status: 'available' },
+        { id: 'img', object: 'model', created: Math.floor(now / 1000), owned_by: 'system', supports_tools: false, status: 'available' },
+        { id: 'tools', object: 'model', created: Math.floor(now / 1000), owned_by: 'system', supports_tools: true, status: 'available' },
+      ];
+      
       const data = states.filter(s => !s.disabled).map(s => ({
         id: s.service.name,
         object: 'model',
@@ -390,7 +427,7 @@ const server = Bun.serve({
         supports_tools: s.service.supportsTools,
         status: s.cooldownUntil > now ? 'cooldown' : 'available',
       }));
-      return new Response(JSON.stringify({ object: 'list', data }, null, 2), {
+      return new Response(JSON.stringify({ object: 'list', data: [...virtualModels, ...data] }, null, 2), {
         headers: withCors({ 'Content-Type': 'application/json' }),
       });
     }
@@ -412,7 +449,9 @@ const server = Bun.serve({
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const { stream: wantsStream = true, model = 'auto', stream_options: _so, ...chatRequest } = body;
       const id = genId();
-      const useAuto = !model || model === 'auto';
+      const useAuto = !model || ['auto', 'img', 'tools'].includes(model);
+      const forceTools = model === 'tools';
+      const forceVision = model === 'img';
 
       const hasTools = !!(chatRequest.tools?.length);
       if (hasTools) {
@@ -421,7 +460,7 @@ const server = Bun.serve({
 
       try {
         const { stream, serviceName } = useAuto
-          ? await tryServices(chatRequest, id)
+          ? await tryServices(chatRequest, id, forceTools, forceVision)
           : await trySpecificService(model, chatRequest, id);
 
         // ── Streaming ──────────────────────────────────────────────────────

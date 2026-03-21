@@ -114,11 +114,11 @@ async function fetchModels(): Promise<{
 
     const free = chatModels
         .filter(isFree)
-        .map(m => ({ id: m.id, supportsTools: detectTools(m) }));
+        .map(m => ({ id: m.id, supportsTools: detectTools(m), supportsVision: m.architecture?.modality?.includes('image') }));
 
     const paid = chatModels
         .filter(m => !isFree(m))
-        .map(m => ({ id: m.id, supportsTools: detectTools(m) }));
+        .map(m => ({ id: m.id, supportsTools: detectTools(m), supportsVision: m.architecture?.modality?.includes('image') }));
 
     return { free, paid };
 }
@@ -126,11 +126,12 @@ async function fetchModels(): Promise<{
 // ─── Service factory ──────────────────────────────────────────────────────────
 
 function createOpenRouterService(
-    { id: model, supportsTools }: { id: string; supportsTools: boolean }
+    { id: model, supportsTools, supportsVision }: { id: string; supportsTools: boolean; supportsVision?: boolean }
 ): AIService {
     return {
         name: `OpenRouter/${model}`,
         supportsTools,
+        supportsVision,
         async chat(request: ChatRequest, id: string) {
             const {
                 messages, tools, tool_choice,
@@ -145,6 +146,7 @@ function createOpenRouterService(
                 max_tokens,
                 ...(supportsTools && tools?.length && { tools }),
                 ...(supportsTools && tool_choice !== undefined && { tool_choice }),
+                ...(request.response_format && { response_format: request.response_format }),
             });
 
             return (async function* () {

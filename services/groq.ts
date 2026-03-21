@@ -1,32 +1,18 @@
 import { Groq } from 'groq-sdk';
 import type { AIService, ChatRequest } from '../types';
 
-const groq = new Groq();
+let groq: Groq | null = null;
+if (process.env.GROQ_API_KEY) {
+    groq = new Groq();
+}
 
-// Per-model tool calling support on Groq
-// Not all models support function/tool calling — mark explicitly
-const MODELS: { id: string; supportsTools: boolean }[] = [
-  // ✅ Supports tool calling
-  { id: 'groq/compound', supportsTools: true },
-  { id: 'groq/compound-mini', supportsTools: true },
-  { id: 'llama-3.3-70b-versatile', supportsTools: true },
-  { id: 'meta-llama/llama-4-maverick-17b-128e-instruct', supportsTools: true },
-  { id: 'meta-llama/llama-4-scout-17b-16e-instruct', supportsTools: true },
-  { id: 'qwen/qwen3-32b', supportsTools: true },
-  { id: 'mixtral-8x7b-32768', supportsTools: true },
-  // ❌ No tool calling support (or too small context for tools)
-  { id: 'moonshotai/kimi-k2-instruct', supportsTools: false },
-  { id: 'moonshotai/kimi-k2-instruct-0905', supportsTools: false },
-  { id: 'openai/gpt-oss-120b', supportsTools: false },
-  { id: 'openai/gpt-oss-20b', supportsTools: false },
-  { id: 'deepseek-r1-distill-llama-70b', supportsTools: false },
-];
-
-function createGroqService({ id: model, supportsTools }: { id: string; supportsTools: boolean }): AIService {
+function createGroqService({ id: model, supportsTools, supportsVision }: { id: string; supportsTools: boolean; supportsVision?: boolean }): AIService {
   return {
     name: `Groq/${model}`,
     supportsTools,
+    supportsVision,
     async chat(request: ChatRequest, id: string) {
+      if (!groq) throw new Error("GROQ_API_KEY is missing");
       const {
         messages, tools, tool_choice,
         temperature = 0.6, max_tokens = 4096, top_p = 1,
@@ -40,9 +26,9 @@ function createGroqService({ id: model, supportsTools }: { id: string; supportsT
         top_p,
         stream: true,
         stop: null,
-        // Only pass tools if this model supports them
         ...(supportsTools && tools?.length && { tools }),
         ...(supportsTools && tool_choice !== undefined && { tool_choice }),
+        ...(request.response_format && { response_format: request.response_format }),
       });
 
       return (async function* () {
@@ -55,4 +41,26 @@ function createGroqService({ id: model, supportsTools }: { id: string; supportsT
   };
 }
 
-export const groqServices: AIService[] = MODELS.map(createGroqService);
+export let groqServices: AIService[] = [];
+
+if (process.env.GROQ_API_KEY) {
+    try {
+        const res = await fetch('https://api.groq.com/openai/v1/models', {
+            headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` }
+        });
+        if (res.ok) {
+            const data = await res.json() as any;
+            groqServices = data.data
+                .filter((m: any) => !m.id.includes('whisper'))
+                .map((m: any) => createGroqService({ 
+                    id: m.id, 
+                    supportsTools: !m.id.includes('gpt-oss') && !m.id.includes('deepseek-r1'),
+                    supportsVision: m.id.includes('vision') || m.id.includes('llava')
+                }));
+            console.log(`[Groq] ✅ Loaded ${groqServices.length} dynamic models`);
+        }
+    } catch (e: any) {
+        console.error(`[Groq] ❌ Failed to fetch dynamic models: ${e.message}`);
+    }
+}
+

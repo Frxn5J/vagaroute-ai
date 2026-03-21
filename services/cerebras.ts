@@ -1,19 +1,17 @@
 import Cerebras from '@cerebras/cerebras_cloud_sdk';
 import type { AIService, ChatRequest } from '../types';
 
-const cerebras = new Cerebras();
-
-const MODELS: { id: string; supportsTools: boolean }[] = [
-  { id: 'llama-3.3-70b', supportsTools: true },
-  { id: 'llama3.1-8b', supportsTools: true },
-  { id: 'llama-4-scout-17b-16e-instruct', supportsTools: true },
-];
+let cerebras: Cerebras | null = null;
+if (process.env.CEREBRAS_API_KEY) {
+    cerebras = new Cerebras();
+}
 
 function createCerebrasService({ id: model, supportsTools }: { id: string; supportsTools: boolean }): AIService {
   return {
     name: `Cerebras/${model}`,
     supportsTools,
     async chat(request: ChatRequest, id: string) {
+      if (!cerebras) throw new Error("CEREBRAS_API_KEY missing");
       const {
         messages, tools, tool_choice,
         temperature = 0.6, max_tokens = 8192, top_p = 0.95,
@@ -40,4 +38,20 @@ function createCerebrasService({ id: model, supportsTools }: { id: string; suppo
   };
 }
 
-export const cerebrasServices: AIService[] = MODELS.map(createCerebrasService);
+export let cerebrasServices: AIService[] = [];
+
+if (process.env.CEREBRAS_API_KEY) {
+    try {
+        const res = await fetch('https://api.cerebras.ai/v1/models', {
+            headers: { Authorization: `Bearer ${process.env.CEREBRAS_API_KEY}` }
+        });
+        if (res.ok) {
+            const data = await res.json() as any;
+            cerebrasServices = data.data.map((m: any) => createCerebrasService({ id: m.id, supportsTools: true }));
+            console.log(`[Cerebras] ✅ Loaded ${cerebrasServices.length} dynamic models`);
+        }
+    } catch (e: any) {
+        console.error(`[Cerebras] ❌ Fetch failed: ${e.message}`);
+    }
+}
+
