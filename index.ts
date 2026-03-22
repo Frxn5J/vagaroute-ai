@@ -1,4 +1,5 @@
 import { tryServices, trySpecificService, states, resetStates } from './core/pool';
+import { getAllModelStats } from './core/db';
 import { withCors } from './utils/cors';
 import { isAuthorized } from './middlewares/auth';
 import { isRateLimited } from './middlewares/rateLimit';
@@ -195,6 +196,30 @@ const server = Bun.serve({
         supports_tools: s.service.supportsTools, status: s.cooldownUntil > now ? 'cooldown' : 'available',
       }));
       return new Response(JSON.stringify({ object: 'list', data: [...virtualModels, ...data] }, null, 2), {
+        headers: withCors({ 'Content-Type': 'application/json' }),
+      });
+    }
+
+    // ── Metrics (Database Status) ────────────────────────────────────────────
+    if (req.method === 'GET' && pathname === '/v1/metrics') {
+      const dbStats = getAllModelStats();
+      const active = dbStats.filter(s => s.status === 'active');
+      const cooldown = dbStats.filter(s => s.status === 'cooldown');
+      
+      return new Response(JSON.stringify({
+        total_models_tracked: dbStats.length,
+        available: active.length,
+        rate_limited: cooldown.length,
+        models_in_cooldown: cooldown.map(c => ({
+            id: c.id,
+            locked_until: new Date(c.rate_limited_until).toLocaleString(),
+            seconds_remaining: Math.max(0, Math.ceil((c.rate_limited_until - Date.now()) / 1000))
+        })),
+        usage_telemetry: dbStats.sort((a, b) => b.requests_served - a.requests_served).slice(0, 50).map(u => ({
+            id: u.id,
+            requests_served: u.requests_served
+        }))
+      }, null, 2), {
         headers: withCors({ 'Content-Type': 'application/json' }),
       });
     }
