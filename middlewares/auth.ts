@@ -6,6 +6,7 @@ import {
   createSession,
   createUser,
   createUserApiKey,
+  deleteSessionsByUserId,
   deleteSessionByTokenHash,
   getApiKeyAuthByHash,
   getAppSettings,
@@ -95,12 +96,25 @@ function createSessionCookieValue(token: string, expiresAt: number, secure: bool
   return parts.join('; ');
 }
 
+function isSecureRequest(req: Request): boolean {
+  if (new URL(req.url).protocol === 'https:') {
+    return true;
+  }
+
+  const forwardedProto = req.headers.get('x-forwarded-proto');
+  if (forwardedProto?.split(',').some((value) => value.trim().toLowerCase() === 'https')) {
+    return true;
+  }
+
+  return /\bproto=https\b/i.test(req.headers.get('forwarded') ?? '');
+}
+
 export function buildSessionCookie(token: string, expiresAt: number, req: Request): string {
-  return createSessionCookieValue(token, expiresAt, new URL(req.url).protocol === 'https:');
+  return createSessionCookieValue(token, expiresAt, isSecureRequest(req));
 }
 
 export function clearSessionCookie(req: Request): string {
-  return createSessionCookieValue('', 0, new URL(req.url).protocol === 'https:');
+  return createSessionCookieValue('', 0, isSecureRequest(req));
 }
 
 async function createManagedApiKey(userId: string, name: string, rateLimitPerMinute: number, projectId?: string | null) {
@@ -366,6 +380,7 @@ export async function resetPasswordWithToken(input: {
 
   const passwordHash = await Bun.password.hash(input.password);
   updateUserPassword(tokenRecord.user_id, passwordHash);
+  deleteSessionsByUserId(tokenRecord.user_id);
   markPasswordResetTokenUsed(tokenRecord.id);
 }
 
@@ -410,6 +425,9 @@ export async function authenticateRequest(req: Request): Promise<AuthContext | n
         name: 'System Token',
         role: 'admin',
         isActive: true,
+        monthlyRequestQuota: null,
+        monthlyBudgetUsd: null,
+        onboardingCompletedAt: null,
         createdAt: 0,
         updatedAt: 0,
         lastLoginAt: null,

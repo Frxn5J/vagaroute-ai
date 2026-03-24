@@ -456,6 +456,9 @@ interface UserApiKeyLookupRow extends UserApiKeyRow {
   name_display: string;
   role: UserRole;
   user_is_active: number;
+  monthly_request_quota: number | null;
+  monthly_budget_usd: number | null;
+  onboarding_completed_at: number | null;
   user_created_at: number;
   user_updated_at: number;
   user_last_login_at: number | null;
@@ -556,6 +559,11 @@ export interface RequestRateLimitResult {
   limit: number;
   remaining: number;
   resetAt: number;
+}
+
+export interface RequestMetricsScope {
+  userId?: string | null;
+  visibleProjectIds?: string[] | null;
 }
 
 export interface ProviderMetric {
@@ -1587,6 +1595,10 @@ export function deleteSessionByTokenHash(tokenHash: string): void {
   db.query(`DELETE FROM sessions WHERE token_hash = $tokenHash`).run({ $tokenHash: tokenHash });
 }
 
+export function deleteSessionsByUserId(userId: string): void {
+  db.query(`DELETE FROM sessions WHERE user_id = $userId`).run({ $userId: userId });
+}
+
 export function deleteExpiredSessions(): void {
   db.query(`DELETE FROM sessions WHERE expires_at <= $now`).run({ $now: Date.now() });
 }
@@ -1665,6 +1677,9 @@ export function getApiKeyAuthByHash(keyHash: string): ApiKeyAuthRecord | null {
       u.name AS name_display,
       u.role,
       u.is_active AS user_is_active,
+      u.monthly_request_quota,
+      u.monthly_budget_usd,
+      u.onboarding_completed_at,
       u.created_at AS user_created_at,
       u.updated_at AS user_updated_at,
       u.last_login_at AS user_last_login_at,
@@ -1698,6 +1713,9 @@ export function getApiKeyAuthByHash(keyHash: string): ApiKeyAuthRecord | null {
       name: row.name_display,
       role: row.role,
       isActive: row.user_is_active === 1,
+      monthlyRequestQuota: row.monthly_request_quota,
+      monthlyBudgetUsd: row.monthly_budget_usd,
+      onboardingCompletedAt: row.onboarding_completed_at,
       createdAt: row.user_created_at,
       updatedAt: row.user_updated_at,
       lastLoginAt: row.user_last_login_at,
@@ -1916,6 +1934,65 @@ function buildNamedPlaceholders(values: string[], prefix: string): {
   return {
     clause: placeholders.join(', '),
     params,
+  };
+}
+
+function normalizeVisibleProjectIds(projectIds?: string[] | null): string[] {
+  return Array.from(new Set(
+    (projectIds ?? [])
+      .map((projectId) => projectId?.trim())
+      .filter((projectId): projectId is string => Boolean(projectId)),
+  ));
+}
+
+function buildRequestMetricsUserScope(
+  scope?: RequestMetricsScope,
+  columnName: string = 'user_id',
+): {
+  clause: string;
+  params: Record<string, string>;
+} {
+  if (!scope?.userId?.trim()) {
+    return {
+      clause: '',
+      params: {},
+    };
+  }
+
+  return {
+    clause: ` AND ${columnName} = $scopeUserId`,
+    params: {
+      $scopeUserId: scope.userId.trim(),
+    },
+  };
+}
+
+function buildVisibleProjectFilter(
+  scope?: RequestMetricsScope,
+  columnName: string = 'p.id',
+): {
+  clause: string;
+  params: Record<string, string>;
+} {
+  if (!scope?.visibleProjectIds) {
+    return {
+      clause: '',
+      params: {},
+    };
+  }
+
+  const projectIds = normalizeVisibleProjectIds(scope.visibleProjectIds);
+  if (projectIds.length === 0) {
+    return {
+      clause: ' AND 1 = 0',
+      params: {},
+    };
+  }
+
+  const placeholders = buildNamedPlaceholders(projectIds, 'visibleProject');
+  return {
+    clause: ` AND ${columnName} IN (${placeholders.clause})`,
+    params: placeholders.params,
   };
 }
 
@@ -2278,15 +2355,17 @@ export function checkAndIncrementRequestRateLimit(
   return result;
 }
 
-export function getSpendSummary(): SpendSummary {
+export function getSpendSummary(scope?: RequestMetricsScope): SpendSummary {
   const range = getMonthRange();
+  const userScope = buildRequestMetricsUserScope(scope);
   const row = db.query(`
     SELECT COALESCE(SUM(estimated_cost_usd), 0) AS total_cost
     FROM request_metrics
-    WHERE created_at >= $start AND created_at < $end
+    WHERE created_at >= $start AND created_at < $end${userScope.clause}
   `).get({
     $start: range.start,
     $end: range.end,
+    ...userScope.params,
   }) as { total_cost: number | null } | null;
 
   const currentMonthUsd = Number((row?.total_cost ?? 0).toFixed(6));
@@ -2302,18 +2381,20 @@ export function getSpendSummary(): SpendSummary {
   };
 }
 
-export function getTokenSummary(): TokenSummary {
+export function getTokenSummary(scope?: RequestMetricsScope): TokenSummary {
   const range = getMonthRange();
+  const userScope = buildRequestMetricsUserScope(scope);
   const row = db.query(`
     SELECT
       COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
       COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
       COALESCE(SUM(total_tokens), 0) AS total_tokens
     FROM request_metrics
-    WHERE created_at >= $start AND created_at < $end
+    WHERE created_at >= $start AND created_at < $end${userScope.clause}
   `).get({
     $start: range.start,
     $end: range.end,
+    ...userScope.params,
   }) as {
     prompt_tokens: number | null;
     completion_tokens: number | null;
@@ -2358,7 +2439,8 @@ export function getTokenSummary(): TokenSummary {
   };
 }
 
-export function getRecentErrors(limit: number = 15): RecentMetric[] {
+export function getRecentErrors(limit: number = 15, scope?: RequestMetricsScope): RecentMetric[] {
+  const userScope = buildRequestMetricsUserScope(scope);
   const rows = db.query(`
     SELECT
       method,
@@ -2376,9 +2458,13 @@ export function getRecentErrors(limit: number = 15): RecentMetric[] {
       created_at
     FROM request_metrics
     WHERE status_code >= 400
+      ${userScope.clause}
     ORDER BY created_at DESC
     LIMIT $limit
-  `).all({ $limit: limit }) as Array<{
+  `).all({
+    $limit: limit,
+    ...userScope.params,
+  }) as Array<{
     method: string;
     path: string;
     request_type: string;
@@ -2411,8 +2497,11 @@ export function getRecentErrors(limit: number = 15): RecentMetric[] {
   }));
 }
 
-export function getUserUsageSummaries(): UsageSummary[] {
+export function getUserUsageSummaries(scope?: RequestMetricsScope): UsageSummary[] {
   const range = getMonthRange();
+  const userWhere = scope?.userId?.trim()
+    ? 'WHERE u.id = $scopeUserId'
+    : '';
   const rows = db.query(`
     SELECT
       u.id,
@@ -2430,11 +2519,13 @@ export function getUserUsageSummaries(): UsageSummary[] {
       ON r.user_id = u.id
       AND r.created_at >= $start
       AND r.created_at < $end
+    ${userWhere}
     GROUP BY u.id
     ORDER BY total_tokens DESC, request_count DESC, u.created_at ASC
   `).all({
     $start: range.start,
     $end: range.end,
+    ...(scope?.userId?.trim() ? { $scopeUserId: scope.userId.trim() } : {}),
   }) as Array<{
     id: string;
     name: string;
@@ -2468,8 +2559,10 @@ export function getUserUsageSummaries(): UsageSummary[] {
   }));
 }
 
-export function getProjectUsageSummaries(): UsageSummary[] {
+export function getProjectUsageSummaries(scope?: RequestMetricsScope): UsageSummary[] {
   const range = getMonthRange();
+  const userScope = buildRequestMetricsUserScope(scope, 'r.user_id');
+  const projectFilter = buildVisibleProjectFilter(scope);
   const rows = db.query(`
     SELECT
       p.id,
@@ -2486,11 +2579,15 @@ export function getProjectUsageSummaries(): UsageSummary[] {
       ON r.project_id = p.id
       AND r.created_at >= $start
       AND r.created_at < $end
+      ${userScope.clause}
+    WHERE 1 = 1${projectFilter.clause}
     GROUP BY p.id
     ORDER BY total_tokens DESC, request_count DESC, p.created_at ASC
   `).all({
     $start: range.start,
     $end: range.end,
+    ...userScope.params,
+    ...projectFilter.params,
   }) as Array<{
     id: string;
     name: string;
@@ -2522,23 +2619,26 @@ export function getProjectUsageSummaries(): UsageSummary[] {
   }));
 }
 
-export function getDashboardMetrics(): DashboardMetrics {
+export function getDashboardMetrics(scope?: RequestMetricsScope): DashboardMetrics {
   const now = Date.now();
   const fourteenDaysAgo = now - (13 * 24 * 60 * 60 * 1000);
-  const totalsRow = db.query(`
-    SELECT
-      (SELECT COUNT(*) FROM users WHERE is_active = 1) AS users,
-      (SELECT COUNT(*) FROM user_api_keys WHERE is_active = 1) AS user_api_keys,
-      (SELECT COUNT(*) FROM service_api_keys WHERE is_active = 1) AS service_api_keys,
-      (SELECT COUNT(*) FROM projects WHERE is_active = 1) AS projects,
-      (SELECT COUNT(*) FROM request_metrics) AS requests
-  `).get() as {
-    users: number;
-    user_api_keys: number;
-    service_api_keys: number;
-    projects: number;
-    requests: number;
-  } | null;
+  const userScope = buildRequestMetricsUserScope(scope);
+  const totalsRow = scope?.userId?.trim()
+    ? null
+    : db.query(`
+      SELECT
+        (SELECT COUNT(*) FROM users WHERE is_active = 1) AS users,
+        (SELECT COUNT(*) FROM user_api_keys WHERE is_active = 1) AS user_api_keys,
+        (SELECT COUNT(*) FROM service_api_keys WHERE is_active = 1) AS service_api_keys,
+        (SELECT COUNT(*) FROM projects WHERE is_active = 1) AS projects,
+        (SELECT COUNT(*) FROM request_metrics) AS requests
+    `).get() as {
+      users: number;
+      user_api_keys: number;
+      service_api_keys: number;
+      projects: number;
+      requests: number;
+    } | null;
 
   const providerRows = db.query(`
     SELECT
@@ -2553,10 +2653,12 @@ export function getDashboardMetrics(): DashboardMetrics {
       COALESCE(SUM(estimated_cost_usd), 0) AS total_cost_usd,
       MAX(created_at) AS last_request_at
     FROM request_metrics
-    WHERE provider IS NOT NULL AND provider <> ''
+    WHERE provider IS NOT NULL AND provider <> ''${userScope.clause}
     GROUP BY LOWER(provider)
     ORDER BY total_requests DESC, LOWER(provider) ASC
-  `).all() as {
+  `).all({
+    ...userScope.params,
+  }) as {
     provider: string;
     total_requests: number;
     prompt_tokens: number | null;
@@ -2583,11 +2685,13 @@ export function getDashboardMetrics(): DashboardMetrics {
       COALESCE(SUM(estimated_cost_usd), 0) AS total_cost_usd,
       MAX(created_at) AS last_request_at
     FROM request_metrics
-    WHERE provider IS NOT NULL AND provider <> '' AND model IS NOT NULL AND model <> ''
+    WHERE provider IS NOT NULL AND provider <> '' AND model IS NOT NULL AND model <> ''${userScope.clause}
     GROUP BY LOWER(provider), model
     ORDER BY total_requests DESC, LOWER(provider) ASC, model ASC
     LIMIT 100
-  `).all() as {
+  `).all({
+    ...userScope.params,
+  }) as {
     provider: string;
     model: string;
     total_requests: number;
@@ -2617,9 +2721,12 @@ export function getDashboardMetrics(): DashboardMetrics {
       error_message,
       created_at
     FROM request_metrics
+    WHERE 1 = 1${userScope.clause}
     ORDER BY created_at DESC
     LIMIT 25
-  `).all() as {
+  `).all({
+    ...userScope.params,
+  }) as {
     method: string;
     path: string;
     request_type: string;
@@ -2646,11 +2753,12 @@ export function getDashboardMetrics(): DashboardMetrics {
       SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) AS error_count,
       ROUND(AVG(duration_ms), 1) AS avg_duration_ms
     FROM request_metrics
-    WHERE created_at >= $start
+    WHERE created_at >= $start${userScope.clause}
     GROUP BY strftime('%Y-%m-%d', created_at / 1000, 'unixepoch', 'localtime')
     ORDER BY bucket ASC
   `).all({
     $start: fourteenDaysAgo,
+    ...userScope.params,
   }) as Array<{
     bucket: string;
     request_count: number;
@@ -2671,9 +2779,12 @@ export function getDashboardMetrics(): DashboardMetrics {
       COALESCE(SUM(total_tokens), 0) AS total_tokens,
       ROUND(AVG(duration_ms), 1) AS avg_duration_ms
     FROM request_metrics
+    WHERE 1 = 1${userScope.clause}
     GROUP BY request_type
     ORDER BY total_tokens DESC, request_count DESC, request_type ASC
-  `).all() as Array<{
+  `).all({
+    ...userScope.params,
+  }) as Array<{
     request_type: string;
     request_count: number;
     prompt_tokens: number | null;
@@ -2692,7 +2803,10 @@ export function getDashboardMetrics(): DashboardMetrics {
       COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
       COALESCE(SUM(total_tokens), 0) AS total_tokens
     FROM request_metrics
-  `).get() as {
+    WHERE 1 = 1${userScope.clause}
+  `).get({
+    ...userScope.params,
+  }) as {
     request_count: number | null;
     success_count: number | null;
     error_count: number | null;
@@ -2705,14 +2819,19 @@ export function getDashboardMetrics(): DashboardMetrics {
   const requestCount = summaryRow?.request_count ?? 0;
   const successCount = summaryRow?.success_count ?? 0;
   const errorCount = summaryRow?.error_count ?? 0;
+  const scopedUserId = scope?.userId?.trim() || null;
+  const visibleProjectIds = normalizeVisibleProjectIds(scope?.visibleProjectIds);
+  const scopedApiKeyCount = scopedUserId
+    ? listApiKeysForUser(scopedUserId).filter((apiKey) => apiKey.isActive).length
+    : 0;
 
   return {
     totals: {
-      users: totalsRow?.users ?? 0,
-      userApiKeys: totalsRow?.user_api_keys ?? 0,
-      serviceApiKeys: totalsRow?.service_api_keys ?? 0,
-      projects: totalsRow?.projects ?? 0,
-      requests: totalsRow?.requests ?? 0,
+      users: scopedUserId ? 1 : (totalsRow?.users ?? 0),
+      userApiKeys: scopedUserId ? scopedApiKeyCount : (totalsRow?.user_api_keys ?? 0),
+      serviceApiKeys: scopedUserId ? 0 : (totalsRow?.service_api_keys ?? 0),
+      projects: scopedUserId ? visibleProjectIds.length : (totalsRow?.projects ?? 0),
+      requests: scopedUserId ? requestCount : (totalsRow?.requests ?? 0),
     },
     providers: providerRows.map((row) => ({
       provider: row.provider,

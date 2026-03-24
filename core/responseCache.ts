@@ -172,9 +172,18 @@ function toCachedResponseEntry(row: CachedResponseRow): CachedResponseEntry {
   };
 }
 
-function incrementStat(statKey: 'hits' | 'misses' | 'stores'): void {
+function incrementStat(statKey: 'hits' | 'misses' | 'stores', scopeKey?: string | null): void {
   upsertCacheStat.run({
     $statKey: statKey,
+    $updatedAt: Date.now(),
+  });
+
+  if (!scopeKey) {
+    return;
+  }
+
+  upsertCacheStat.run({
+    $statKey: `${statKey}:${scopeKey}`,
     $updatedAt: Date.now(),
   });
 }
@@ -220,7 +229,7 @@ export function buildChatCacheKey(input: {
   return createHash('sha256').update(normalized).digest('hex');
 }
 
-export function getCachedResponse(cacheKey: string): CachedResponseEntry | null {
+export function getCachedResponse(cacheKey: string, scopeKey?: string | null): CachedResponseEntry | null {
   if (!appConfig.responseCacheEnabled) {
     return null;
   }
@@ -229,7 +238,7 @@ export function getCachedResponse(cacheKey: string): CachedResponseEntry | null 
   const memoryEntry = memoryCache.get(cacheKey);
   if (memoryEntry && memoryEntry.expiresAt > now) {
     touchCacheHit.run({ $cacheKey: cacheKey, $now: now });
-    incrementStat('hits');
+    incrementStat('hits', memoryEntry.scopeKey);
     const updated = {
       ...memoryEntry,
       hitCount: memoryEntry.hitCount + 1,
@@ -245,7 +254,7 @@ export function getCachedResponse(cacheKey: string): CachedResponseEntry | null 
 
   const row = selectCacheEntry.get({ $cacheKey: cacheKey }) as CachedResponseRow | null;
   if (!row || row.expires_at <= now) {
-    incrementStat('misses');
+    incrementStat('misses', scopeKey);
     if (now % 25 === 0) {
       purgeExpiredEntries(now);
     }
@@ -253,7 +262,7 @@ export function getCachedResponse(cacheKey: string): CachedResponseEntry | null 
   }
 
   touchCacheHit.run({ $cacheKey: cacheKey, $now: now });
-  incrementStat('hits');
+  incrementStat('hits', row.scope_key);
   const entry = toCachedResponseEntry({
     ...row,
     hit_count: row.hit_count + 1,
@@ -312,7 +321,7 @@ export function setCachedResponse(input: {
     $lastHitAt: entry.lastHitAt,
   });
   cacheInMemory(entry);
-  incrementStat('stores');
+  incrementStat('stores', entry.scopeKey);
 
   if (now % 25 === 0) {
     purgeExpiredEntries(now);
@@ -321,24 +330,63 @@ export function setCachedResponse(input: {
   return entry;
 }
 
-export function getResponseCacheStats(): ResponseCacheStats {
+export function getResponseCacheStats(input?: { userId?: string | null }): ResponseCacheStats {
   purgeExpiredEntries();
 
-  const statRows = db.query(`
-    SELECT stat_key, value
-    FROM response_cache_stats
-  `).all() as Array<{ stat_key: string; value: number }>;
+  const now = Date.now();
+  const scopedUserId = input?.userId?.trim() || null;
+  const scopeMarker = scopedUserId ? `:${scopedUserId}:` : null;
+  const row = scopedUserId
+    ? db.query(`
+      SELECT
+        COUNT(*) AS entries,
+        COALESCE(SUM(hit_count), 0) AS hits
+      FROM response_cache_entries
+      WHERE expires_at > $now
+        AND INSTR(scope_key, $scopeMarker) > 0
+    `).get({
+      $now: now,
+      $scopeMarker: scopeMarker,
+    }) as { entries: number; hits: number | null } | null
+    : db.query(`
+      SELECT
+        COUNT(*) AS entries,
+        COALESCE(SUM(hit_count), 0) AS hits
+      FROM response_cache_entries
+      WHERE expires_at > $now
+    `).get({ $now: now }) as { entries: number; hits: number | null } | null;
 
-  const stats = new Map(statRows.map((row) => [row.stat_key, row.value]));
-  const row = db.query(`
-    SELECT COUNT(*) AS entries
-    FROM response_cache_entries
-    WHERE expires_at > $now
-  `).get({ $now: Date.now() }) as { entries: number } | null;
+  const statsRow = scopedUserId
+    ? db.query(`
+      SELECT
+        COALESCE(SUM(CASE
+          WHEN INSTR(stat_key, 'hits:') = 1 AND INSTR(stat_key, $scopeMarker) > 0 THEN value
+          ELSE 0
+        END), 0) AS hits,
+        COALESCE(SUM(CASE
+          WHEN INSTR(stat_key, 'misses:') = 1 AND INSTR(stat_key, $scopeMarker) > 0 THEN value
+          ELSE 0
+        END), 0) AS misses,
+        COALESCE(SUM(CASE
+          WHEN INSTR(stat_key, 'stores:') = 1 AND INSTR(stat_key, $scopeMarker) > 0 THEN value
+          ELSE 0
+        END), 0) AS stores
+      FROM response_cache_stats
+    `).get({
+      $scopeMarker: scopeMarker,
+    }) as { hits: number | null; misses: number | null; stores: number | null } | null
+    : db.query(`
+      SELECT
+        COALESCE(SUM(CASE WHEN stat_key = 'hits' THEN value ELSE 0 END), 0) AS hits,
+        COALESCE(SUM(CASE WHEN stat_key = 'misses' THEN value ELSE 0 END), 0) AS misses,
+        COALESCE(SUM(CASE WHEN stat_key = 'stores' THEN value ELSE 0 END), 0) AS stores
+      FROM response_cache_stats
+    `).get() as { hits: number | null; misses: number | null; stores: number | null } | null;
 
-  const hits = stats.get('hits') ?? 0;
-  const misses = stats.get('misses') ?? 0;
-  const stores = stats.get('stores') ?? 0;
+  const entryHits = Number(row?.hits ?? 0);
+  const hits = Math.max(Number(statsRow?.hits ?? 0), entryHits);
+  const misses = Number(statsRow?.misses ?? 0);
+  const stores = Number(statsRow?.stores ?? 0);
   const totalLookups = hits + misses;
 
   return {

@@ -35,6 +35,8 @@ import {
   updateProject,
   updateUserProductSettings,
   updateServiceApiKey,
+  type DashboardMetrics,
+  type RequestMetricsScope,
 } from './core/db';
 import { appConfig } from './core/config';
 import { estimateUsageCostUsd } from './core/costs';
@@ -213,10 +215,50 @@ function resolveCacheScopeKey(auth: AuthContext | null, req: Request): string {
   });
 }
 
+function resolveRequestMetricsScope(auth: AuthContext): {
+  scope: RequestMetricsScope | undefined;
+  visibleProjects: ReturnType<typeof listProjectsForUser>;
+} {
+  const visibleProjects = isAdmin(auth) ? listAllProjects() : listProjectsForUser(auth.user.id);
+  if (isAdmin(auth)) {
+    return {
+      scope: undefined,
+      visibleProjects,
+    };
+  }
+
+  return {
+    scope: {
+      userId: auth.user.id,
+      visibleProjectIds: visibleProjects.map((project) => project.id),
+    },
+    visibleProjects,
+  };
+}
+
+function buildScopedModelTelemetry(metrics: DashboardMetrics) {
+  return metrics.models
+    .map((item) => ({
+      id: `${item.provider}/${item.model}`,
+      provider: item.provider,
+      status: 'scoped',
+      rate_limited_until: 0,
+      requests_served: item.totalRequests,
+    }))
+    .sort((left, right) => right.requests_served - left.requests_served)
+    .slice(0, 100);
+}
+
 function buildDashboardAlerts(
   auth: AuthContext,
-  tokens: ReturnType<typeof getTokenSummary>,
+  input: {
+    tokens: ReturnType<typeof getTokenSummary>;
+    userUsage: ReturnType<typeof getUserUsageSummaries>;
+    projectUsage: ReturnType<typeof getProjectUsageSummaries>;
+    providerStats: ReturnType<typeof getAllProviderStats>;
+  },
 ) {
+  const { tokens, userUsage, projectUsage, providerStats } = input;
   const alerts: Array<{
     id: string;
     severity: 'info' | 'warning' | 'error';
@@ -224,8 +266,8 @@ function buildDashboardAlerts(
     message: string;
   }> = [];
 
-  for (const provider of getAllProviderStats()) {
-    if (provider.cooldownUntil > Date.now()) {
+  for (const provider of providerStats) {
+    if (isAdmin(auth) && provider.cooldownUntil > Date.now()) {
       alerts.push({
         id: `provider-${provider.id}`,
         severity: 'warning',
@@ -235,7 +277,7 @@ function buildDashboardAlerts(
     }
   }
 
-  for (const summary of getUserUsageSummaries()) {
+  for (const summary of userUsage) {
     if (summary.status !== 'ok' && (isAdmin(auth) || summary.id === auth.user.id)) {
       alerts.push({
         id: `user-${summary.id}`,
@@ -246,7 +288,7 @@ function buildDashboardAlerts(
     }
   }
 
-  for (const summary of getProjectUsageSummaries()) {
+  for (const summary of projectUsage) {
     if (summary.status !== 'ok') {
       alerts.push({
         id: `project-${summary.id}`,
@@ -271,15 +313,25 @@ function buildDashboardAlerts(
 
 function buildDashboardPayload(auth: AuthContext) {
   const now = Date.now();
-  const metrics = getDashboardMetrics();
-  const spend = getSpendSummary();
-  const tokens = getTokenSummary();
+  const { scope: metricsScope, visibleProjects } = resolveRequestMetricsScope(auth);
+  const metrics = getDashboardMetrics(metricsScope);
+  const spend = getSpendSummary(metricsScope);
+  const tokens = getTokenSummary(metricsScope);
   const providerStats = getAllProviderStats();
   const providerCooldownMap = new Map(providerStats.map((item) => [item.id, item]));
-  const modelTelemetry = getAllModelStats()
-    .sort((left, right) => right.requests_served - left.requests_served)
-    .slice(0, 100);
+  const modelTelemetry = isAdmin(auth)
+    ? getAllModelStats()
+      .sort((left, right) => right.requests_served - left.requests_served)
+      .slice(0, 100)
+    : buildScopedModelTelemetry(metrics);
   const providerNames = Array.from(new Set(states.map((state) => normalizeProviderId(state.service.name.split('/')[0] ?? ''))));
+  const userUsage = isAdmin(auth)
+    ? getUserUsageSummaries()
+    : getUserUsageSummaries(metricsScope);
+  const projectUsage = isAdmin(auth)
+    ? getProjectUsageSummaries()
+    : getProjectUsageSummaries(metricsScope);
+  const recentErrors = getRecentErrors(15, metricsScope);
 
   return {
     me: auth.user,
@@ -347,19 +399,18 @@ function buildDashboardPayload(auth: AuthContext) {
     modelTelemetry,
     spend,
     tokens,
-    projects: isAdmin(auth) ? listAllProjects() : listProjectsForUser(auth.user.id),
+    projects: visibleProjects,
     invitations: isAdmin(auth) ? listInvitationTokens() : [],
-    recentErrors: getRecentErrors(),
-    userUsage: isAdmin(auth)
-      ? getUserUsageSummaries()
-      : getUserUsageSummaries().filter((item) => item.id === auth.user.id),
-    projectUsage: isAdmin(auth)
-      ? getProjectUsageSummaries()
-      : getProjectUsageSummaries().filter((item) =>
-        listProjectsForUser(auth.user.id).some((project) => project.id === item.id),
-      ),
-    alerts: buildDashboardAlerts(auth, tokens),
-    cache: getResponseCacheStats(),
+    recentErrors,
+    userUsage,
+    projectUsage,
+    alerts: buildDashboardAlerts(auth, {
+      tokens,
+      userUsage,
+      projectUsage,
+      providerStats,
+    }),
+    cache: getResponseCacheStats(isAdmin(auth) ? undefined : { userId: auth.user.id }),
     tokenization: {
       mode: 'provider-usage-with-fallback',
       exactForCompletedResponses: true,
@@ -576,12 +627,18 @@ function isChatCacheEligible(request: ChatRequest & { stream?: boolean }, wantsS
   return !containsVision;
 }
 
+function isPathInsideBase(baseDir: string, candidatePath: string): boolean {
+  const relativePath = path.relative(baseDir, candidatePath);
+  return relativePath === ''
+    || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
+}
+
 function tryServeStatic(req: Request, pathname: string): Response | null {
   const normalizedPath = pathname === '/' ? '/index.html' : pathname;
   const relative = normalizedPath.replace(/^\/+/, '');
   const resolved = path.resolve(publicDir, relative);
 
-  if (resolved.startsWith(publicDir) && existsSync(resolved)) {
+  if (isPathInsideBase(publicDir, resolved) && existsSync(resolved)) {
     return new Response(Bun.file(resolved), {
       headers: withCors(req, { 'X-Request-Id': getRequestId(req) }),
     });
@@ -1241,9 +1298,11 @@ async function routeRequest(
     }
 
     if (auth && req.method === 'GET' && pathname === '/api/metrics/overview') {
+      const { scope: metricsScope } = resolveRequestMetricsScope(auth);
+      const metrics = getDashboardMetrics(metricsScope);
       return jsonResponse(req, {
-        metrics: getDashboardMetrics(),
-        modelTelemetry: getAllModelStats(),
+        metrics,
+        modelTelemetry: isAdmin(auth) ? getAllModelStats() : buildScopedModelTelemetry(metrics),
       });
     }
 
@@ -1332,10 +1391,11 @@ async function routeRequest(
     }
 
     if (auth && req.method === 'GET' && pathname === '/v1/metrics') {
-      const dbStats = getAllModelStats();
-      const dashboard = getDashboardMetrics();
-      const active = dbStats.filter((item) => item.status === 'active');
-      const cooldown = dbStats.filter((item) => item.status === 'cooldown');
+      const { scope: metricsScope } = resolveRequestMetricsScope(auth);
+      const dashboard = getDashboardMetrics(metricsScope);
+      const dbStats = isAdmin(auth) ? getAllModelStats() : buildScopedModelTelemetry(dashboard);
+      const active = isAdmin(auth) ? dbStats.filter((item) => item.status === 'active') : [];
+      const cooldown = isAdmin(auth) ? dbStats.filter((item) => item.status === 'cooldown') : [];
 
       return jsonResponse(req, {
         total_models_tracked: dbStats.length,
@@ -1639,7 +1699,7 @@ async function routeRequest(
         : null;
 
       if (cacheKey) {
-        const cached = getCachedResponse(cacheKey);
+        const cached = getCachedResponse(cacheKey, cacheScopeKey);
         if (cached) {
           const cachedResponse = cached.response as {
             model?: string;

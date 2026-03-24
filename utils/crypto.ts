@@ -18,6 +18,18 @@ function parseEnvMasterKey(raw: string): Buffer {
   return decoded;
 }
 
+function parseStoredMasterKey(raw: string): Buffer {
+  const decoded = Buffer.from(raw.trim(), 'base64');
+  if (decoded.length !== 32) {
+    throw new Error('router.master.key must contain a 32-byte base64 key');
+  }
+  return decoded;
+}
+
+function isProductionEnvironment(): boolean {
+  return process.env.NODE_ENV?.trim().toLowerCase() === 'production';
+}
+
 function getMasterKey(): Buffer {
   if (cachedMasterKey) {
     return cachedMasterKey;
@@ -29,14 +41,22 @@ function getMasterKey(): Buffer {
     return cachedMasterKey;
   }
 
+  if (isProductionEnvironment()) {
+    throw new Error('ROUTER_MASTER_KEY is required in production; local router.master.key fallback is disabled');
+  }
+
   if (existsSync(MASTER_KEY_PATH)) {
-    cachedMasterKey = Buffer.from(readFileSync(MASTER_KEY_PATH, 'utf8').trim(), 'base64');
+    cachedMasterKey = parseStoredMasterKey(readFileSync(MASTER_KEY_PATH, 'utf8'));
     return cachedMasterKey;
   }
 
   cachedMasterKey = randomBytes(32);
   writeFileSync(MASTER_KEY_PATH, cachedMasterKey.toString('base64'), 'utf8');
   return cachedMasterKey;
+}
+
+export function __resetMasterKeyCacheForTests(): void {
+  cachedMasterKey = null;
 }
 
 export function hashToken(value: string): string {

@@ -334,12 +334,18 @@ small {
 .chart-line.prompt,
 .chart-dot.prompt {
   stroke: var(--accent);
+}
+
+.chart-dot.prompt {
   fill: var(--accent);
 }
 
 .chart-line.completion,
 .chart-dot.completion {
   stroke: #7bdff2;
+}
+
+.chart-dot.completion {
   fill: #7bdff2;
 }
 

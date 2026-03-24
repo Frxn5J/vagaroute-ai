@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, rmSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { AIService } from '../types';
 
@@ -31,6 +31,7 @@ const { appFetch } = await import('../index.ts');
 const { db, updateAppSettings } = await import('../core/db.ts');
 const { replacePoolStates } = await import('../core/pool.ts');
 const { estimateTextTokens, estimateMessageTokens } = await import('../core/tokenizer.ts');
+const { encryptSecret, __resetMasterKeyCacheForTests } = await import('../utils/crypto.ts');
 
 const requestServer = {
   requestIP() {
@@ -193,6 +194,22 @@ async function bootstrapAdmin() {
   };
 }
 
+async function loginWithPassword(email: string, password: string) {
+  const response = await request('/api/login', {
+    method: 'POST',
+    origin: 'https://allowed.example',
+    json: {
+      email,
+      password,
+    },
+  });
+
+  return {
+    response,
+    cookie: response.status === 200 ? getSessionCookie(response) : null,
+  };
+}
+
 async function getDashboard(cookie: string) {
   const response = await request('/api/dashboard', {
     headers: {
@@ -202,6 +219,7 @@ async function getDashboard(cookie: string) {
 
   expect(response.status).toBe(200);
   return await response.json() as {
+    auth: { isAdmin: boolean };
     spend: { currentMonthUsd: number; projectedMonthUsd: number };
     tokens: {
       currentMonthTokens: number;
@@ -212,15 +230,18 @@ async function getDashboard(cookie: string) {
       projectedMonthCompletionTokens: number;
     };
     alerts: Array<{ title: string; severity: string }>;
+    recentErrors: Array<{ path: string; statusCode: number; errorMessage: string | null }>;
+    modelTelemetry: Array<{ id: string; requests_served: number }>;
     cache: { enabled: boolean; backend: string; hits: number; misses: number; entries: number; hitRate: number };
     tokenization: { mode: string; exactForCompletedResponses: boolean };
     metrics: {
+      totals: { requests: number; users: number; projects: number; serviceApiKeys: number; userApiKeys: number };
       providers: Array<{ provider: string; totalCostUsd: number; totalTokens: number; promptTokens: number; completionTokens: number }>;
       models: Array<{ model: string; totalCostUsd: number; totalTokens: number; promptTokens: number; completionTokens: number }>;
       recent: Array<{ estimatedCostUsd: number; totalTokens: number; promptTokens: number; completionTokens: number }>;
-      daily: Array<{ bucket: string; totalTokens: number; promptTokens: number; completionTokens: number }>;
+      daily: Array<{ bucket: string; totalTokens: number; promptTokens: number; completionTokens: number; requestCount: number }>;
       requestTypes: Array<{ requestType: string; totalTokens: number; promptTokens: number; completionTokens: number }>;
-      summary: { totalTokens: number; promptTokens: number; completionTokens: number; successRate: number };
+      summary: { requestCount: number; totalTokens: number; promptTokens: number; completionTokens: number; successRate: number };
     };
     projects: Array<{ id: string; name: string; role?: string }>;
     userUsage: Array<{ id: string; status: string; requestCount: number; totalTokens: number; promptTokens: number; completionTokens: number }>;
@@ -273,6 +294,24 @@ describe('auth', () => {
     expect(payload.via).toBe('session');
     expect(payload.isAdmin).toBe(true);
     expect(payload.user.email).toBe('admin@example.com');
+  });
+
+  test('marks session cookies as Secure when TLS is forwarded by a proxy', async () => {
+    const response = await request('/api/bootstrap', {
+      method: 'POST',
+      origin: 'https://allowed.example',
+      headers: {
+        'X-Forwarded-Proto': 'https',
+      },
+      json: {
+        name: 'Admin',
+        email: 'admin@example.com',
+        password: 'password123',
+      },
+    });
+
+    expect(response.status).toBe(201);
+    expect(response.headers.get('set-cookie')).toContain('Secure');
   });
 
   test('rejects protected routes without authentication', async () => {
@@ -419,6 +458,24 @@ describe('cors and routing', () => {
 
     expect(payload.model).toBe('Mock/router');
     expect(payload.choices[0]?.message.content).toBe('pong');
+  });
+
+  test('does not serve files outside public even if the path shares the public prefix', async () => {
+    const canaryPath = path.join(process.cwd(), 'public-canary.txt');
+    writeFileSync(canaryPath, 'leak-through-public-prefix', 'utf8');
+
+    try {
+      const response = await request('/../public-canary.txt', {
+        method: 'GET',
+        origin: 'https://allowed.example',
+      });
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get('content-type')).toContain('text/html');
+      expect(await response.text()).not.toContain('leak-through-public-prefix');
+    } finally {
+      rmSync(canaryPath, { force: true });
+    }
   });
 });
 
@@ -742,7 +799,7 @@ describe('cache and token usage', () => {
 
 describe('password reset', () => {
   test('requests and confirms a password reset with a temporary token', async () => {
-    await bootstrapAdmin();
+    const bootstrap = await bootstrapAdmin();
 
     const requestResetResponse = await request('/api/auth/password-reset/request', {
       method: 'POST',
@@ -771,6 +828,13 @@ describe('password reset', () => {
     });
     expect(confirmResponse.status).toBe(200);
 
+    const staleSessionResponse = await request('/api/auth/me', {
+      headers: {
+        Cookie: bootstrap.cookie,
+      },
+    });
+    expect(staleSessionResponse.status).toBe(401);
+
     const oldLoginResponse = await request('/api/login', {
       method: 'POST',
       json: {
@@ -789,6 +853,162 @@ describe('password reset', () => {
       },
     });
     expect(newLoginResponse.status).toBe(200);
+  });
+});
+
+describe('metrics visibility', () => {
+  test('scopes dashboard and metrics endpoints to the authenticated non-admin user', async () => {
+    const admin = await bootstrapAdmin();
+
+    const alphaUserResponse = await request('/api/users', {
+      method: 'POST',
+      headers: {
+        Cookie: admin.cookie,
+      },
+      json: {
+        name: 'Alpha',
+        email: 'alpha@example.com',
+        password: 'password123',
+      },
+    });
+    expect(alphaUserResponse.status).toBe(201);
+
+    const alphaUser = await alphaUserResponse.json() as {
+      rawApiKey: string;
+      user: { id: string };
+    };
+
+    const bravoUserResponse = await request('/api/users', {
+      method: 'POST',
+      headers: {
+        Cookie: admin.cookie,
+      },
+      json: {
+        name: 'Bravo',
+        email: 'bravo@example.com',
+        password: 'password123',
+      },
+    });
+    expect(bravoUserResponse.status).toBe(201);
+
+    const bravoUser = await bravoUserResponse.json() as {
+      rawApiKey: string;
+      user: { id: string };
+    };
+
+    replacePoolStates([
+      buildMockState(createSuccessService('Mock/alpha')),
+      buildMockState(createRateLimitedService('Mock/bravo')),
+    ]);
+
+    const alphaChatResponse = await request('/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${alphaUser.rawApiKey}`,
+      },
+      json: {
+        model: 'Mock/alpha',
+        stream: false,
+        messages: [{ role: 'user', content: 'hola alpha' }],
+      },
+    });
+    expect(alphaChatResponse.status).toBe(200);
+
+    const bravoChatResponse = await request('/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${bravoUser.rawApiKey}`,
+      },
+      json: {
+        model: 'Mock/bravo',
+        stream: false,
+        messages: [{ role: 'user', content: 'hola bravo' }],
+      },
+    });
+    expect(bravoChatResponse.status).toBe(429);
+
+    const alphaLogin = await loginWithPassword('alpha@example.com', 'password123');
+    expect(alphaLogin.response.status).toBe(200);
+
+    const dashboard = await getDashboard(alphaLogin.cookie || '');
+    expect(dashboard.auth.isAdmin).toBe(false);
+    expect(dashboard.metrics.totals.requests).toBe(1);
+    expect(dashboard.metrics.summary.requestCount).toBe(1);
+    expect(dashboard.metrics.models.some((item) => item.model === 'alpha')).toBe(true);
+    expect(dashboard.metrics.models.some((item) => item.model === 'bravo')).toBe(false);
+    expect(dashboard.metrics.recent).toHaveLength(1);
+    expect(dashboard.recentErrors).toHaveLength(0);
+    expect(dashboard.modelTelemetry.some((item) => item.id === 'mock/alpha')).toBe(true);
+    expect(dashboard.modelTelemetry.some((item) => item.id === 'mock/bravo')).toBe(false);
+    expect(dashboard.userUsage).toHaveLength(1);
+    expect(dashboard.userUsage[0]?.id).toBe(alphaUser.user.id);
+    expect(dashboard.userUsage[0]?.requestCount).toBe(1);
+
+    const overviewResponse = await request('/api/metrics/overview', {
+      headers: {
+        Cookie: alphaLogin.cookie || '',
+      },
+    });
+    expect(overviewResponse.status).toBe(200);
+    const overviewPayload = await overviewResponse.json() as {
+      metrics: { summary: { requestCount: number } };
+      modelTelemetry: Array<{ id: string }>;
+    };
+    expect(overviewPayload.metrics.summary.requestCount).toBe(1);
+    expect(overviewPayload.modelTelemetry.some((item) => item.id === 'mock/alpha')).toBe(true);
+    expect(overviewPayload.modelTelemetry.some((item) => item.id === 'mock/bravo')).toBe(false);
+
+    const userMetricsResponse = await request('/v1/metrics', {
+      headers: {
+        Authorization: `Bearer ${alphaUser.rawApiKey}`,
+      },
+    });
+    expect(userMetricsResponse.status).toBe(200);
+    const userMetricsPayload = await userMetricsResponse.json() as {
+      rate_limited: number;
+      models_in_cooldown: Array<{ id: string }>;
+      usage_telemetry: Array<{ id: string; provider: string; requests_served: number }>;
+      provider_metrics: Array<{ provider: string; totalRequests: number }>;
+      model_metrics: Array<{ model: string; totalRequests: number }>;
+      summary: { requestCount: number };
+    };
+    expect(userMetricsPayload.summary.requestCount).toBe(1);
+    expect(userMetricsPayload.rate_limited).toBe(0);
+    expect(userMetricsPayload.models_in_cooldown).toHaveLength(0);
+    expect(userMetricsPayload.usage_telemetry).toEqual([
+      {
+        id: 'mock/alpha',
+        provider: 'mock',
+        requests_served: 1,
+      },
+    ]);
+    expect(userMetricsPayload.provider_metrics).toHaveLength(1);
+    expect(userMetricsPayload.provider_metrics[0]?.totalRequests).toBe(1);
+    expect(userMetricsPayload.model_metrics).toHaveLength(1);
+    expect(userMetricsPayload.model_metrics[0]?.model).toBe('alpha');
+  });
+});
+
+describe('crypto hardening', () => {
+  test('requires ROUTER_MASTER_KEY in production instead of auto-generating a local fallback', () => {
+    const previousEnv = process.env.ROUTER_MASTER_KEY;
+    const previousNodeEnv = process.env.NODE_ENV;
+
+    try {
+      delete process.env.ROUTER_MASTER_KEY;
+      process.env.NODE_ENV = 'production';
+      __resetMasterKeyCacheForTests();
+
+      expect(() => encryptSecret('top-secret')).toThrow(/ROUTER_MASTER_KEY is required in production/i);
+    } finally {
+      if (previousEnv === undefined) {
+        delete process.env.ROUTER_MASTER_KEY;
+      } else {
+        process.env.ROUTER_MASTER_KEY = previousEnv;
+      }
+      process.env.NODE_ENV = previousNodeEnv;
+      __resetMasterKeyCacheForTests();
+    }
   });
 });
 
