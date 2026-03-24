@@ -1,4 +1,4 @@
-import { withProviderKey } from '../core/providerKeys';
+import { getProviderKeyCandidates, withProviderKey } from '../core/providerKeys';
 import type { AIService, ChatRequest } from '../types';
 import { logger } from '../utils/logger';
 
@@ -116,6 +116,12 @@ function buildFallbackServices(): AIService[] {
 }
 
 export async function loadPuterServices(): Promise<AIService[]> {
+  const candidates = getProviderKeyCandidates('puter');
+  if (candidates.length === 0) {
+    logger.info({ provider: 'puter' }, 'Puter skipped because no API keys are configured');
+    return [];
+  }
+
   try {
     const services = await withProviderKey('puter', async ({ key }) => {
       const response = await fetch('https://api.puter.com/puterai/chat/models/details', {
@@ -146,6 +152,16 @@ export async function loadPuterServices(): Promise<AIService[]> {
     logger.info({ provider: 'puter', count: services.length }, 'Puter models loaded');
     return services;
   } catch (err) {
+    const status = (err as { status?: number; statusCode?: number })?.status
+      ?? (err as { status?: number; statusCode?: number })?.statusCode
+      ?? 0;
+    const code = (err as { code?: string })?.code ?? null;
+
+    if (code === 'provider_key_missing' || status === 401 || status === 403) {
+      logger.warn({ err }, 'Puter disabled because the configured credentials are unavailable');
+      return [];
+    }
+
     logger.warn({ err }, 'Puter models could not be loaded, using fallbacks');
     return buildFallbackServices();
   }
