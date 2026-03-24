@@ -31,6 +31,9 @@ function resolveEnvironment(value: string | undefined): AppEnvironment {
 }
 
 const env = resolveEnvironment(process.env.NODE_ENV);
+const defaultDbPath = env === 'production'
+  ? '/data/router.sqlite'
+  : path.join(process.cwd(), 'router.sqlite');
 
 export const appConfig = {
   env,
@@ -41,7 +44,7 @@ export const appConfig = {
   port: parseNumber(process.env.PORT, 3000),
   logLevel: process.env.LOG_LEVEL?.trim() || (env === 'production' ? 'info' : 'debug'),
   prettyLogs: parseBoolean(process.env.PRETTY_LOGS, env !== 'production' && env !== 'test'),
-  dbPath: process.env.ROUTER_DB_PATH?.trim() || path.join(process.cwd(), 'router.sqlite'),
+  dbPath: process.env.ROUTER_DB_PATH?.trim() || defaultDbPath,
   responseCacheEnabled: parseBoolean(process.env.RESPONSE_CACHE_ENABLED, true),
   responseCacheBackend: (process.env.RESPONSE_CACHE_BACKEND?.trim().toLowerCase() || 'hybrid') as 'memory' | 'sqlite' | 'hybrid',
   responseCacheTtlSeconds: parseNumber(process.env.RESPONSE_CACHE_TTL_SECONDS, 300),

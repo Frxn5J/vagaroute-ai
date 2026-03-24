@@ -135,7 +135,9 @@ ROUTER_MASTER_KEY=       # Optional: 32-byte hex/base64 key to encrypt service k
                          # If not set, a key is auto-generated and saved to router.master.key
 
 # Database
-ROUTER_DB_PATH=          # Optional: custom SQLite path (default: ./router.sqlite)
+ROUTER_DB_PATH=          # Optional: custom SQLite path
+                         # Development default: ./router.sqlite
+                         # Production default: /data/router.sqlite
 
 # Response Cache
 RESPONSE_CACHE_ENABLED=1
@@ -210,6 +212,11 @@ LOG_LEVEL=info
 ROUTER_MASTER_KEY=<your-32-byte-secret>
 ROUTER_DB_PATH=/data/router.sqlite   # mount a persistent volume here
 ```
+
+Important for Coolify:
+- Mount a persistent volume at `/data`
+- Keep the same `ROUTER_MASTER_KEY` across redeploys
+- If you don't set `ROUTER_DB_PATH`, production now defaults to `/data/router.sqlite`
 
 ---
 
