@@ -21,11 +21,21 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 .env.test.local
 .env.production.local
 .env.local
+router.master.key
+
+# local database files
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+*.db-shm
+*.db-wal
 
 # caches
 .eslintcache
 .cache
 *.tsbuildinfo
+.tmp
 
 # IntelliJ based IDEs
 .idea

@@ -9,7 +9,7 @@ async function main() {
         for await (const chunk of stream) {
             console.log(chunk);
         }
-    } catch(e) {
+    } catch(e: any) {
         console.error("ERROR CAUGHT:");
         console.error(e);
         console.error("Message:", e.message);

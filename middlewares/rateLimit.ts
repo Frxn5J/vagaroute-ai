@@ -1,29 +1,14 @@
+import { checkAndIncrementRequestRateLimit, type RequestRateLimitResult } from '../core/db';
 import { logger } from '../utils/logger';
 
-interface RateLimitToken {
-  count: number;
-  resetAt: number;
-}
+export type RateLimitResult = RequestRateLimitResult;
 
-const map = new Map<string, RateLimitToken>();
-const WINDOW_MS = 60 * 1000; // 1 minute
-const MAX_REQUESTS = Number(process.env.RATE_LIMIT_MAX) || 50; // Max 50 request per minute per IP by default
+const WINDOW_MS = 60_000;
 
-export function isRateLimited(ip: string): boolean {
-  const now = Date.now();
-  let record = map.get(ip);
-
-  if (!record || record.resetAt <= now) {
-    record = { count: 1, resetAt: now + WINDOW_MS };
-    map.set(ip, record);
-    return false;
+export function checkRateLimit(key: string, limit: number): RateLimitResult {
+  const result = checkAndIncrementRequestRateLimit(key, limit, WINDOW_MS);
+  if (result.limited) {
+    logger.warn({ key, limit: result.limit, resetAt: result.resetAt }, 'Rate limit exceeded');
   }
-
-  if (record.count >= MAX_REQUESTS) {
-    logger.warn({ ip, attempts: record.count }, `Rate limit exceeded para IP: ${ip}`);
-    return true; // Is rate limited
-  }
-
-  record.count++;
-  return false;
+  return result;
 }

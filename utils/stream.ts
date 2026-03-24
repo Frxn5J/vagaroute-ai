@@ -4,6 +4,52 @@ export function genId(): string {
   return `chatcmpl-${Math.random().toString(36).slice(2, 11)}`;
 }
 
+export interface StreamUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
+function parseUsage(raw: unknown): StreamUsage | null {
+  const usage = raw as {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+  } | null;
+
+  if (!usage) {
+    return null;
+  }
+
+  const promptTokens = Number(usage.prompt_tokens ?? 0);
+  const completionTokens = Number(usage.completion_tokens ?? 0);
+  const totalTokens = Number(usage.total_tokens ?? promptTokens + completionTokens);
+
+  if (!Number.isFinite(promptTokens) || !Number.isFinite(completionTokens) || !Number.isFinite(totalTokens)) {
+    return null;
+  }
+
+  return {
+    promptTokens: Math.max(0, Math.floor(promptTokens)),
+    completionTokens: Math.max(0, Math.floor(completionTokens)),
+    totalTokens: Math.max(0, Math.floor(totalTokens)),
+  };
+}
+
+function parseUsageFromSSELine(line: string): StreamUsage | null {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith('data: ') || trimmed === 'data: [DONE]') {
+    return null;
+  }
+
+  try {
+    const chunk = JSON.parse(trimmed.slice(6));
+    return parseUsage(chunk.usage);
+  } catch {
+    return null;
+  }
+}
+
 /** Wraps a stream to catch mid-stream errors and emit a proper SSE error before [DONE]. */
 export async function* withErrorBoundary(
   source: AsyncIterable<string>,
@@ -11,13 +57,6 @@ export async function* withErrorBoundary(
 ): AsyncGenerator<string> {
   try {
     for await (const chunk of source) {
-      if (chunk.trim() === 'data: [DONE]') {
-        yield `data: ${JSON.stringify({
-          id: 'chatcmpl-auth', object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: serviceName,
-          choices: [],
-          usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
-        })}\n\n`;
-      }
       yield chunk;
     }
   } catch (err: any) {
@@ -38,10 +77,12 @@ export async function collectSSE(source: AsyncIterable<string>): Promise<{
   content: string;
   tool_calls: any[];
   finish_reason: string;
+  usage: StreamUsage | null;
 }> {
   let content = '';
   const toolCallMap: Record<number, any> = {};
   let finish_reason = 'stop';
+  let usage: StreamUsage | null = null;
 
   for await (const line of source) {
     const trimmed = line.trim();
@@ -49,6 +90,7 @@ export async function collectSSE(source: AsyncIterable<string>): Promise<{
 
     try {
       const chunk = JSON.parse(trimmed.slice(6));
+      usage = parseUsage(chunk.usage) ?? usage;
       const choice = chunk.choices?.[0];
       if (!choice) continue;
 
@@ -76,5 +118,23 @@ export async function collectSSE(source: AsyncIterable<string>): Promise<{
   }
 
   const tool_calls = Object.values(toolCallMap);
-  return { content, tool_calls, finish_reason };
+  return { content, tool_calls, finish_reason, usage };
+}
+
+export async function* observeSSE(
+  source: AsyncIterable<string>,
+  callbacks: {
+    onComplete?: (meta: { usage: StreamUsage | null }) => void;
+  } = {},
+): AsyncGenerator<string> {
+  let usage: StreamUsage | null = null;
+
+  try {
+    for await (const line of source) {
+      usage = parseUsageFromSSELine(line) ?? usage;
+      yield line;
+    }
+  } finally {
+    callbacks.onComplete?.({ usage });
+  }
 }

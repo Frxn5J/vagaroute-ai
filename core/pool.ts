@@ -1,38 +1,40 @@
-import { groqServices } from '../services/groq';
-import { cerebrasServices } from '../services/cerebras';
-import { openrouterFreeServices, openrouterPaidServices } from '../services/openrouter';
-import { mistralServices } from '../services/mistral';
-import { codestralServices } from '../services/codestral';
-import { geminiServices } from '../services/gemini';
-import { cohereServices } from '../services/cohere';
-import { nvidiaServices } from '../services/nvidia';
-import { alibabaServices } from '../services/alibaba';
-import { puterServices } from '../services/puter';
+import { loadAlibabaServices } from '../services/alibaba';
+import { loadCerebrasServices } from '../services/cerebras';
+import { loadCodestralServices } from '../services/codestral';
+import { loadCohereServices } from '../services/cohere';
+import { loadGeminiServices } from '../services/gemini';
+import { loadGroqServices } from '../services/groq';
+import { loadMistralServices } from '../services/mistral';
+import { loadNvidiaServices } from '../services/nvidia';
+import { loadOpenRouterServices } from '../services/openrouter';
+import { loadPuterServices } from '../services/puter';
 import type { AIService, ChatRequest } from '../types';
 import { logger } from '../utils/logger';
-import { syncModelsToDb, getAllModelStats, setModelRateLimited, incrementModelUsage } from './db';
-
-/** Free models — included in automatic rotation */
-const freeServices: AIService[] = [
-  ...groqServices,
-  ...openrouterFreeServices,
-  ...cerebrasServices,
-  ...geminiServices,
-  ...alibabaServices,
-  ...mistralServices,
-  ...codestralServices,
-  ...cohereServices,
-  ...nvidiaServices,
-  ...puterServices,
-];
-
-/** Paid OpenRouter models — only used when explicitly requested by name */
-const paidServices: AIService[] = [
-  ...openrouterPaidServices,
-];
+import {
+  getAllModelStats,
+  getAppSettings,
+  getModelUsageSnapshots,
+  getProviderCooldownMap,
+  getProviderUsageSnapshots,
+  getRateLimitRulesMap,
+  incrementModelUsage,
+  setModelRateLimited,
+  setProviderRateLimited,
+  syncModelsToDb,
+  syncProvidersToDb,
+} from './db';
+import {
+  emptyUsageSnapshot,
+  estimateChatUsage,
+  evaluateRateLimit,
+  getProviderIdFromServiceName,
+  normalizeServiceId,
+  type UsageEstimate,
+} from './usageLimits';
 
 const MIN_MS = 60 * 1_000;
 const HOUR_MS = 60 * MIN_MS;
+const MAX_RETRIES = 10;
 
 export interface ServiceState {
   service: AIService;
@@ -42,183 +44,411 @@ export interface ServiceState {
   tier: number;
 }
 
-function getModelTier(modelName: string): number {
-  const name = modelName.toLowerCase();
-  
-  // Tier 1: Los gigantes de la IA (Masivos, súper capaces, visuales)
-  if (name.includes('70b') || name.includes('72b') || name.includes('gpt-4o') || name.includes('claude-3-7') || name.includes('claude-3.5') || name.includes('gemini-1.5-pro') || name.includes('opus') || name.includes('405b') || name.includes('deepseek-r1')) {
-      return 1;
-  }
-  // Tier 2: Modelos muy rápidos, decentes y ágiles
-  if (name.includes('8b') || name.includes('flash') || name.includes('grok-2') || name.includes('sonnet') || name.includes('haiku') || name.includes('mixtral') || name.includes('qwen') || name.includes('nemotron')) {
-      return 2;
-  }
-  // Tier 3: Todo el resto
-  return 3;
-}
-
-// 1. Initial Database Sync
-syncModelsToDb(freeServices.map(s => ({ id: s.name, provider: s.name.split('/')[0] || 'Unknown' })));
-const dbStats = getAllModelStats();
-const dbStatusMap = new Map(dbStats.map(row => [row.id, row]));
-
-export const states: ServiceState[] = [
-  ...freeServices.map(s => {
-      const dbRow = dbStatusMap.get(s.name);
-      return { 
-          service: s, 
-          cooldownUntil: dbRow ? dbRow.rate_limited_until : 0, 
-          disabled: dbRow?.status === 'disabled', 
-          paidOnly: false,
-          tier: getModelTier(s.name)
-      };
-  }),
-  ...paidServices.map(s => ({ service: s, cooldownUntil: 0, disabled: false, paidOnly: true, tier: 100 })),
-];
+export let states: ServiceState[] = [];
 
 const AGENT_MODEL_NAMES: string[] = (process.env.AGENT_MODELS ?? '')
   .split(',')
-  .map(s => s.trim())
+  .map((item) => item.trim())
   .filter(Boolean);
 
-export function hasImage(request: ChatRequest): boolean {
-  if (!request.messages) return false;
-  for (const msg of request.messages) {
-    if (Array.isArray(msg.content)) {
-      if (msg.content.some((p: any) => p.type === 'image_url')) return true;
-    }
+function getModelTier(modelName: string): number {
+  const name = modelName.toLowerCase();
+
+  if (
+    name.includes('70b')
+    || name.includes('72b')
+    || name.includes('gpt-4o')
+    || name.includes('claude-3-7')
+    || name.includes('claude-3.5')
+    || name.includes('gemini-1.5-pro')
+    || name.includes('opus')
+    || name.includes('405b')
+    || name.includes('deepseek-r1')
+  ) {
+    return 1;
   }
-  return false;
+
+  if (
+    name.includes('8b')
+    || name.includes('flash')
+    || name.includes('grok-2')
+    || name.includes('sonnet')
+    || name.includes('haiku')
+    || name.includes('mixtral')
+    || name.includes('qwen')
+    || name.includes('nemotron')
+  ) {
+    return 2;
+  }
+
+  return 3;
 }
 
-export function getPool(requireTools: boolean, requireVision: boolean): ServiceState[] {
-  let pool = states.filter(s => !s.disabled && !s.paidOnly);
+function buildStates(freeServices: AIService[], paidServices: AIService[]): ServiceState[] {
+  const allServices = [...freeServices, ...paidServices];
+  syncModelsToDb(allServices.map((service) => ({
+    id: service.name,
+    provider: service.name.split('/')[0] || 'Unknown',
+  })));
+  syncProvidersToDb(allServices.map((service) => getProviderIdFromServiceName(service.name)));
+
+  const dbStats = getAllModelStats();
+  const dbStatusMap = new Map(dbStats.map((row) => [row.id, row]));
+
+  return [
+    ...freeServices.map((service) => {
+      const dbRow = dbStatusMap.get(service.name);
+      return {
+        service,
+        cooldownUntil: dbRow?.rate_limited_until ?? 0,
+        disabled: dbRow?.status === 'disabled',
+        paidOnly: false,
+        tier: getModelTier(service.name),
+      };
+    }),
+    ...paidServices.map((service) => {
+      const dbRow = dbStatusMap.get(service.name);
+      return {
+        service,
+        cooldownUntil: dbRow?.rate_limited_until ?? 0,
+        disabled: dbRow?.status === 'disabled',
+        paidOnly: true,
+        tier: 100,
+      };
+    }),
+  ];
+}
+
+export async function initializePool(): Promise<void> {
+  await reloadPool('startup');
+}
+
+export async function reloadPool(reason: string = 'manual'): Promise<void> {
+  const [
+    groqServices,
+    cerebrasServices,
+    openRouter,
+    mistralServices,
+    codestralServices,
+    geminiServices,
+    cohereServices,
+    nvidiaServices,
+    alibabaServices,
+    puterServices,
+  ] = await Promise.all([
+    loadGroqServices(),
+    loadCerebrasServices(),
+    loadOpenRouterServices(),
+    loadMistralServices(),
+    loadCodestralServices(),
+    loadGeminiServices(),
+    loadCohereServices(),
+    loadNvidiaServices(),
+    loadAlibabaServices(),
+    loadPuterServices(),
+  ]);
+
+  const freeServices = [
+    ...groqServices,
+    ...openRouter.freeServices,
+    ...cerebrasServices,
+    ...geminiServices,
+    ...alibabaServices,
+    ...mistralServices,
+    ...codestralServices,
+    ...cohereServices,
+    ...nvidiaServices,
+    ...puterServices,
+  ];
+  const settings = getAppSettings();
+  const paidServices = settings.openRouterFreeOnly ? [] : openRouter.paidServices;
+
+  states = buildStates(freeServices, paidServices);
+  logger.info(
+    {
+      reason,
+      total: states.length,
+      available: states.filter((state) => !state.disabled).length,
+    },
+    'Service pool reloaded',
+  );
+}
+
+export function replacePoolStates(nextStates: ServiceState[]): void {
+  states = nextStates;
+  syncModelsToDb(nextStates.map((state) => ({
+    id: state.service.name,
+    provider: state.service.name.split('/')[0] || 'Unknown',
+  })));
+  syncProvidersToDb(nextStates.map((state) => getProviderIdFromServiceName(state.service.name)));
+}
+
+export function hasImage(request: ChatRequest): boolean {
+  if (!request.messages) {
+    return false;
+  }
+
+  return request.messages.some((message) =>
+    Array.isArray(message.content) && message.content.some((part) => part.type === 'image_url'),
+  );
+}
+
+function getCandidatePool(requireTools: boolean, requireVision: boolean): ServiceState[] {
+  let pool = states.filter((state) => !state.disabled && !state.paidOnly);
 
   if (requireTools) {
     if (AGENT_MODEL_NAMES.length > 0) {
-      pool = pool.filter(s => AGENT_MODEL_NAMES.includes(s.service.name) && s.service.supportsTools);
+      pool = pool.filter((state) => AGENT_MODEL_NAMES.includes(state.service.name) && state.service.supportsTools);
     } else {
-      pool = pool.filter(s => s.service.supportsTools);
+      pool = pool.filter((state) => state.service.supportsTools);
     }
   }
 
   if (requireVision) {
-    pool = pool.filter(s => s.service.supportsVision);
+    pool = pool.filter((state) => state.service.supportsVision);
   }
 
-  // Smart Routing: We strictly prioritize Tier 1 first, then 2, etc. Randomize inside tiers for load balancing.
-  return pool.sort((a, b) => {
-      if (a.tier !== b.tier) return a.tier - b.tier;
-      return Math.random() - 0.5; // Agitamos un poco los de la misma jerarquía
+  return pool.sort((left, right) => {
+    if (left.tier !== right.tier) {
+      return left.tier - right.tier;
+    }
+    return Math.random() - 0.5;
   });
 }
 
-export function getService(requireTools: boolean, requireVision: boolean): ServiceState {
+export function getPool(requireTools: boolean, requireVision: boolean): ServiceState[] {
+  const providerCooldowns = getProviderCooldownMap();
   const now = Date.now();
-  const pool = getPool(requireTools, requireVision);
-
-  if (pool.length === 0) {
-    return states.find(s => !s.disabled) ?? states[0]!;
-  }
-
-  // Encuentra el mejor modelo (más rápido, mejor tier) que no esté en cooldown
-  for (let i = 0; i < pool.length; i++) {
-    const s = pool[i]!;
-    if (s.cooldownUntil <= now) {
-      return s;
-    }
-  }
-
-  // Si todos explotaron (Rate Limits masivos), devolvemos el que se vaya a liberar más rápido.
-  return pool.reduce((a, b) => (a.cooldownUntil < b.cooldownUntil ? a : b))!;
+  return getCandidatePool(requireTools, requireVision)
+    .filter((state) => {
+      const providerCooldownUntil = providerCooldowns.get(getProviderIdFromServiceName(state.service.name))?.cooldownUntil ?? 0;
+      return Math.max(state.cooldownUntil, providerCooldownUntil) <= now;
+    });
 }
 
-export function handleServiceError(state: ServiceState, err: any): void {
-  const status: number = err?.status ?? err?.statusCode ?? err?.error?.status ?? parseInt(err?.message?.match(/Error (\d{3}):/)?.[1] || "0", 10) ?? 0;
+function applyConfiguredCooldowns(pool: ServiceState[], estimate: UsageEstimate): void {
+  const providerRules = getRateLimitRulesMap('provider');
+  const modelRules = getRateLimitRulesMap('model');
+  const providerIds = Array.from(new Set(
+    pool
+      .map((state) => getProviderIdFromServiceName(state.service.name))
+      .filter((providerId) => providerRules.has(providerId)),
+  ));
+  const modelIds = Array.from(new Set(
+    pool
+      .map((state) => normalizeServiceId(state.service.name))
+      .filter((modelId) => modelRules.has(modelId)),
+  ));
+
+  const providerUsage = getProviderUsageSnapshots(providerIds);
+  const modelUsage = getModelUsageSnapshots(modelIds);
+
+  for (const state of pool) {
+    const providerId = getProviderIdFromServiceName(state.service.name);
+    const providerRule = providerRules.get(providerId);
+    if (providerRule) {
+      const evaluation = evaluateRateLimit(
+        providerRule,
+        providerUsage.get(providerId) ?? emptyUsageSnapshot(),
+        estimate,
+      );
+      if (evaluation.blocked) {
+        setProviderRateLimited(providerId, evaluation.until, evaluation.reasons.join(' | '));
+      }
+    }
+
+    const modelId = normalizeServiceId(state.service.name);
+    const modelRule = modelRules.get(modelId);
+    if (modelRule) {
+      const evaluation = evaluateRateLimit(
+        modelRule,
+        modelUsage.get(modelId) ?? emptyUsageSnapshot(),
+        estimate,
+      );
+      if (evaluation.blocked) {
+        state.cooldownUntil = Math.max(state.cooldownUntil, evaluation.until);
+        setModelRateLimited(state.service.name, state.cooldownUntil);
+      }
+    }
+  }
+}
+
+function getStateCooldownUntil(state: ServiceState, providerCooldowns: ReturnType<typeof getProviderCooldownMap>): number {
+  const providerCooldownUntil = providerCooldowns.get(getProviderIdFromServiceName(state.service.name))?.cooldownUntil ?? 0;
+  return Math.max(state.cooldownUntil, providerCooldownUntil);
+}
+
+function pickNextAvailableState(
+  pool: ServiceState[],
+  attempted: Set<string>,
+): { state: ServiceState | null; retryAfter: number | null } {
+  const providerCooldowns = getProviderCooldownMap();
+  const now = Date.now();
+  let earliestCooldownUntil = Number.POSITIVE_INFINITY;
+
+  for (const state of pool) {
+    if (attempted.has(state.service.name)) {
+      continue;
+    }
+
+    const cooldownUntil = getStateCooldownUntil(state, providerCooldowns);
+    if (cooldownUntil <= now) {
+      return { state, retryAfter: null };
+    }
+
+    earliestCooldownUntil = Math.min(earliestCooldownUntil, cooldownUntil);
+  }
+
+  if (Number.isFinite(earliestCooldownUntil)) {
+    return {
+      state: null,
+      retryAfter: Math.max(1, Math.ceil((earliestCooldownUntil - now) / 1_000)),
+    };
+  }
+
+  return { state: null, retryAfter: null };
+}
+
+export function handleServiceError(state: ServiceState, err: unknown): void {
+  const value = err as {
+    status?: number;
+    statusCode?: number;
+    error?: { status?: number };
+    headers?: Headers | Record<string, string>;
+    response?: { headers?: Headers | Record<string, string> };
+    message?: string;
+  };
+  const status = value?.status
+    ?? value?.statusCode
+    ?? value?.error?.status
+    ?? Number.parseInt(value?.message?.match(/Error (\d{3}):/)?.[1] ?? '0', 10)
+    ?? 0;
   const name = state.service.name;
 
   if (status === 429) {
-    let resetTimeMs = Date.now() + 15 * 60 * 1000; // 15 Min fallback para la mayoría
-
-    // Parseo Agresivo de Headers de Proveedores (Para Groq, OpenRouter, etc)
-    const headers = err?.headers ?? err?.response?.headers;
+    let resetTimeMs = Date.now() + 15 * 60_000;
+    const headers = value?.headers ?? value?.response?.headers;
     if (headers) {
-      const getHdr = (key: string) => (typeof headers.get === 'function' ? headers.get(key) : headers[key]);
-      const resetStr = getHdr('x-ratelimit-reset') || getHdr('x-ratelimit-reset-requests') || getHdr('retry-after');
-      
-      if (resetStr) {
-          const sec = parseFloat(resetStr);
-          if (!isNaN(sec)) {
-              if (sec > 1000000000) resetTimeMs = sec * 1000; // UNIX timestamp crudo
-              else resetTimeMs = Date.now() + sec * 1000; // Segundos relativos
-          }
+      const getHeader = (key: string) => (
+        typeof (headers as Headers).get === 'function'
+          ? (headers as Headers).get(key)
+          : (headers as Record<string, string>)[key] ?? (headers as Record<string, string>)[key.toLowerCase()]
+      );
+      const resetValue = getHeader('x-ratelimit-reset')
+        ?? getHeader('x-ratelimit-reset-requests')
+        ?? getHeader('retry-after');
+      const seconds = Number.parseFloat(resetValue ?? '');
+      if (Number.isFinite(seconds)) {
+        resetTimeMs = seconds > 1_000_000_000 ? seconds * 1_000 : Date.now() + seconds * 1_000;
       }
     } else if (name.startsWith('Groq/')) {
-        // Groq resetea rapidísimo si no pudimos atrapar su header
-        resetTimeMs = Date.now() + 60 * 1000; 
+      resetTimeMs = Date.now() + 60_000;
     }
 
     state.cooldownUntil = resetTimeMs;
-    setModelRateLimited(name, resetTimeMs); // Guardado asíncrono persistente en disco (SQLite)
-    logger.warn({ name, status: 429, until: new Date(resetTimeMs).toISOString() }, 'Rate limited → locked in SQLite');
-  } else if (status === 402) {
-    const deadline = Date.now() + HOUR_MS * 24; // Sin saldo: 24 horas
+    setModelRateLimited(name, resetTimeMs);
+    logger.warn({ name, status, until: new Date(resetTimeMs).toISOString() }, 'Model moved to cooldown');
+    return;
+  }
+
+  if (status === 402) {
+    const deadline = Date.now() + 24 * HOUR_MS;
     state.cooldownUntil = deadline;
     setModelRateLimited(name, deadline);
-    logger.warn({ name, status: 402 }, 'Quota exceeded → locked for 24h');
-  } else if (status === 413) {
-    state.cooldownUntil = Date.now() + HOUR_MS;
-    logger.warn({ name, status: 413 }, 'Payload too large → cooldown 1 h');
-  } else if (status === 401 || status === 403) {
-    state.disabled = true;
-    logger.error({ name, status }, 'Unauthorized / Forbidden → permanently disabled');
-  } else if (status === 404) {
-    state.disabled = true;
-    logger.error({ name, status: 404 }, 'Model not found → permanently disabled');
-  } else {
-    const deadline = Date.now() + 10_000;
-    state.cooldownUntil = deadline;
-    // No guardamos errores pasajeros de red en la DB, solo la RAM
-    logger.warn({ name, status }, 'Error unknown → cooldown 10 s');
+    logger.warn({ name, status }, 'Model quota exhausted');
+    return;
   }
+
+  if (status === 413) {
+    state.cooldownUntil = Date.now() + HOUR_MS;
+    logger.warn({ name, status }, 'Payload too large for model');
+    return;
+  }
+
+  if (status === 401 || status === 403 || status === 404) {
+    state.disabled = true;
+    logger.error({ name, status }, 'Model disabled after provider error');
+    return;
+  }
+
+  state.cooldownUntil = Date.now() + 10_000;
+  logger.warn({ name, status }, 'Model hit temporary error and entered short cooldown');
 }
 
-export function resetStates(modelName?: string) {
-    if(modelName) {
-        const state = states.find(s => s.service.name === modelName);
-        if(!state) return false;
-        state.cooldownUntil = 0;
-        state.disabled = false;
-        return true;
+export function resetStates(modelName?: string): boolean {
+  if (modelName) {
+    const state = states.find((item) => item.service.name === modelName);
+    if (!state) {
+      return false;
     }
-    states.forEach(s => { s.cooldownUntil = 0; s.disabled = false; });
+    state.cooldownUntil = 0;
+    state.disabled = false;
     return true;
-}
+  }
 
-const MAX_RETRIES = 10;
+  states.forEach((state) => {
+    state.cooldownUntil = 0;
+    state.disabled = false;
+  });
+  return true;
+}
 
 export async function tryServices(
   request: ChatRequest,
   id: string,
   forceTools: boolean = false,
-  forceVision: boolean = false
+  forceVision: boolean = false,
 ): Promise<{ stream: AsyncIterable<string>; serviceName: string }> {
-  const requireTools = forceTools || !!(request.tools?.length);
+  const requireTools = forceTools || Boolean(request.tools?.length);
   const requireVision = forceVision || hasImage(request);
   const errors: string[] = [];
+  const attempted = new Set<string>();
+  const pool = getCandidatePool(requireTools, requireVision);
+  const estimate = estimateChatUsage(request);
 
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    const state = getService(requireTools, requireVision);
-    logger.info({ attempt, max_retries: MAX_RETRIES, serviceName: state.service.name, tier: state.tier, requireTools, requireVision }, `Try Service Loop`);
+  if (pool.length === 0) {
+    throw Object.assign(new Error('No hay modelos compatibles disponibles para esta solicitud.'), {
+      code: 'service_unavailable',
+      httpStatus: 503,
+    });
+  }
+
+  applyConfiguredCooldowns(pool, estimate);
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt += 1) {
+    const { state, retryAfter } = pickNextAvailableState(pool, attempted);
+    if (!state) {
+      throw Object.assign(
+        new Error(retryAfter
+          ? `Todos los modelos compatibles estan en cooldown. Reintenta en ${retryAfter}s.`
+          : 'No hay modelos compatibles disponibles en este momento.'),
+        {
+          code: retryAfter ? 'rate_limit_exceeded' : 'service_unavailable',
+          httpStatus: retryAfter ? 429 : 503,
+          retryAfter: retryAfter ?? undefined,
+          details: errors,
+        },
+      );
+    }
+
+    attempted.add(state.service.name);
+    logger.info({
+      attempt,
+      maxRetries: MAX_RETRIES,
+      serviceName: state.service.name,
+      tier: state.tier,
+      requireTools,
+      requireVision,
+    }, 'Trying pooled service');
 
     try {
       const stream = await state.service.chat(request, id);
-      incrementModelUsage(state.service.name); // Async DB telemetry
+      incrementModelUsage(state.service.name);
       return { stream, serviceName: state.service.name };
-    } catch (err: any) {
-      const msg = err?.message ?? String(err);
-      logger.error({ attempt, serviceName: state.service.name, msg }, `Error during chat completion`);
-      errors.push(`${state.service.name}: ${msg}`);
+    } catch (err) {
+      const message = (err as { message?: string })?.message ?? String(err);
+      logger.error({ attempt, serviceName: state.service.name, message }, 'Service request failed');
+      errors.push(`${state.service.name}: ${message}`);
       handleServiceError(state, err);
     }
   }
@@ -229,37 +459,42 @@ export async function tryServices(
 export async function trySpecificService(
   modelName: string,
   request: ChatRequest,
-  id: string
+  id: string,
 ): Promise<{ stream: AsyncIterable<string>; serviceName: string }> {
-  const state = states.find(s => s.service.name === modelName);
+  const state = states.find((item) => item.service.name === modelName);
 
   if (!state) {
     throw Object.assign(
       new Error(`Model '${modelName}' not found. Use GET /v1/models to list available models.`),
-      { code: 'model_not_found', httpStatus: 404 }
-    );
-  }
-  if (state.disabled) {
-    throw Object.assign(
-      new Error(`Model '${modelName}' is permanently disabled.`),
-      { code: 'model_disabled', httpStatus: 503 }
-    );
-  }
-  const now = Date.now();
-  if (state.cooldownUntil > now) {
-    const retryAfter = Math.ceil((state.cooldownUntil - now) / 1000);
-    throw Object.assign(
-      new Error(`Model '${modelName}' is rate-limited. Retry after ${retryAfter}s.`),
-      { code: 'rate_limit_exceeded', httpStatus: 429, retryAfter }
+      { code: 'model_not_found', httpStatus: 404 },
     );
   }
 
-  logger.info({ serviceName: modelName, tier: state.tier }, `Try Specific Service`);
+  if (state.disabled) {
+    throw Object.assign(
+      new Error(`Model '${modelName}' is permanently disabled.`),
+      { code: 'model_disabled', httpStatus: 503 },
+    );
+  }
+
+  applyConfiguredCooldowns([state], estimateChatUsage(request));
+
+  const now = Date.now();
+  const providerCooldownUntil = getProviderCooldownMap().get(getProviderIdFromServiceName(state.service.name))?.cooldownUntil ?? 0;
+  const cooldownUntil = Math.max(state.cooldownUntil, providerCooldownUntil);
+  if (cooldownUntil > now) {
+    const retryAfter = Math.ceil((cooldownUntil - now) / 1_000);
+    throw Object.assign(
+      new Error(`Model '${modelName}' is rate-limited. Retry after ${retryAfter}s.`),
+      { code: 'rate_limit_exceeded', httpStatus: 429, retryAfter },
+    );
+  }
+
   try {
     const stream = await state.service.chat(request, id);
     incrementModelUsage(state.service.name);
     return { stream, serviceName: state.service.name };
-  } catch (err: any) {
+  } catch (err) {
     handleServiceError(state, err);
     throw err;
   }

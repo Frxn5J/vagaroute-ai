@@ -1,66 +1,83 @@
 import { Groq } from 'groq-sdk';
+import { withProviderKey } from '../core/providerKeys';
 import type { AIService, ChatRequest } from '../types';
+import { logger } from '../utils/logger';
 
-let groq: Groq | null = null;
-if (process.env.GROQ_API_KEY) {
-    groq = new Groq();
-}
-
-function createGroqService({ id: model, supportsTools, supportsVision }: { id: string; supportsTools: boolean; supportsVision?: boolean }): AIService {
+function createGroqService({
+  id: model,
+  supportsTools,
+  supportsVision,
+}: {
+  id: string;
+  supportsTools: boolean;
+  supportsVision?: boolean;
+}): AIService {
   return {
     name: `Groq/${model}`,
     supportsTools,
     supportsVision,
     async chat(request: ChatRequest, id: string) {
-      if (!groq) throw new Error("GROQ_API_KEY is missing");
-      const {
-        messages, tools, tool_choice,
-        temperature = 0.6, max_tokens = 4096, top_p = 1,
-      } = request;
+      return withProviderKey('groq', async ({ key }) => {
+        const client = new Groq({ apiKey: key });
+        const {
+          messages,
+          tools,
+          tool_choice,
+          temperature = 0.6,
+          max_tokens = 4096,
+          top_p = 1,
+        } = request;
 
-      const stream = await groq.chat.completions.create({
-        messages: messages as any,
-        model,
-        temperature,
-        max_completion_tokens: max_tokens,
-        top_p,
-        stream: true,
-        stop: null,
-        ...(supportsTools && tools?.length && { tools }),
-        ...(supportsTools && tool_choice !== undefined && { tool_choice }),
-        ...(request.response_format && { response_format: request.response_format }),
+        const stream = await client.chat.completions.create({
+          messages: messages as never,
+          model,
+          temperature,
+          max_completion_tokens: max_tokens,
+          top_p,
+          stream: true,
+          stream_options: { include_usage: true },
+          stop: null,
+          ...(supportsTools && tools?.length && { tools }),
+          ...(supportsTools && tool_choice !== undefined && { tool_choice }),
+          ...(request.response_format && { response_format: request.response_format }),
+        });
+
+        return (async function* () {
+          for await (const chunk of stream) {
+            yield `data: ${JSON.stringify({ ...chunk, id, model: `Groq/${model}` })}\n\n`;
+          }
+          yield 'data: [DONE]\n\n';
+        })();
       });
-
-      return (async function* () {
-        for await (const chunk of stream) {
-          yield `data: ${JSON.stringify({ ...chunk, id, model: `Groq/${model}` })}\n\n`;
-        }
-        yield 'data: [DONE]\n\n';
-      })();
     },
   };
 }
 
-export let groqServices: AIService[] = [];
+export async function loadGroqServices(): Promise<AIService[]> {
+  try {
+    const models = await withProviderKey('groq', async ({ key }) => {
+      const res = await fetch('https://api.groq.com/openai/v1/models', {
+        headers: { Authorization: `Bearer ${key}` },
+      });
+      if (!res.ok) {
+        throw new Error(`Groq models HTTP ${res.status}`);
+      }
+      const data = await res.json() as {
+        data?: Array<{ id: string }>;
+      };
+      return (data.data ?? [])
+        .filter((model) => !model.id.includes('whisper'))
+        .map((model) => createGroqService({
+          id: model.id,
+          supportsTools: !model.id.includes('gpt-oss') && !model.id.includes('deepseek-r1'),
+          supportsVision: model.id.includes('vision') || model.id.includes('llava'),
+        }));
+    });
 
-if (process.env.GROQ_API_KEY) {
-    try {
-        const res = await fetch('https://api.groq.com/openai/v1/models', {
-            headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` }
-        });
-        if (res.ok) {
-            const data = await res.json() as any;
-            groqServices = data.data
-                .filter((m: any) => !m.id.includes('whisper'))
-                .map((m: any) => createGroqService({ 
-                    id: m.id, 
-                    supportsTools: !m.id.includes('gpt-oss') && !m.id.includes('deepseek-r1'),
-                    supportsVision: m.id.includes('vision') || m.id.includes('llava')
-                }));
-            console.log(`[Groq] ✅ Loaded ${groqServices.length} dynamic models`);
-        }
-    } catch (e: any) {
-        console.error(`[Groq] ❌ Failed to fetch dynamic models: ${e.message}`);
-    }
+    logger.info({ provider: 'groq', count: models.length }, 'Groq models loaded');
+    return models;
+  } catch (err) {
+    logger.warn({ err }, 'Groq models could not be loaded');
+    return [];
+  }
 }
-

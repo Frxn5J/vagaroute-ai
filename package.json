@@ -4,8 +4,12 @@
   "type": "module",
   "private": true,
   "scripts": {
+    "build": "bun build ./index.ts --outdir dist --target bun",
+    "check": "node ./scripts/check.mjs",
     "start": "bun run index.ts",
-    "dev": "bun --watch run index.ts"
+    "dev": "bun --watch run index.ts",
+    "lint": "node ./scripts/lint.mjs",
+    "test": "bun test"
   },
   "devDependencies": {
     "@types/bun": "latest"

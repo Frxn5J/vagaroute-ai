@@ -1,57 +1,77 @@
 import Cerebras from '@cerebras/cerebras_cloud_sdk';
+import { withProviderKey } from '../core/providerKeys';
 import type { AIService, ChatRequest } from '../types';
+import { logger } from '../utils/logger';
 
-let cerebras: Cerebras | null = null;
-if (process.env.CEREBRAS_API_KEY) {
-    cerebras = new Cerebras();
-}
-
-function createCerebrasService({ id: model, supportsTools }: { id: string; supportsTools: boolean }): AIService {
+function createCerebrasService({
+  id: model,
+  supportsTools,
+}: {
+  id: string;
+  supportsTools: boolean;
+}): AIService {
   return {
     name: `Cerebras/${model}`,
     supportsTools,
     async chat(request: ChatRequest, id: string) {
-      if (!cerebras) throw new Error("CEREBRAS_API_KEY missing");
-      const {
-        messages, tools, tool_choice,
-        temperature = 0.6, max_tokens = 8192, top_p = 0.95,
-      } = request;
+      return withProviderKey('cerebras', async ({ key }) => {
+        const client = new Cerebras({ apiKey: key });
+        const {
+          messages,
+          tools,
+          tool_choice,
+          temperature = 0.6,
+          max_tokens = 8192,
+          top_p = 0.95,
+        } = request;
 
-      const stream = await cerebras.chat.completions.create({
-        messages: messages as any,
-        model,
-        stream: true,
-        max_completion_tokens: max_tokens,
-        temperature,
-        top_p,
-        ...(supportsTools && tools?.length && { tools }),
-        ...(supportsTools && tool_choice !== undefined && { tool_choice }),
+        const stream = await client.chat.completions.create({
+          messages: messages as never,
+          model,
+          stream: true,
+          stream_options: { include_usage: true },
+          max_completion_tokens: max_tokens,
+          temperature,
+          top_p,
+          ...(supportsTools && tools?.length && { tools }),
+          ...(supportsTools && tool_choice !== undefined && { tool_choice }),
+        });
+
+        return (async function* () {
+          for await (const chunk of stream) {
+            yield `data: ${JSON.stringify({ ...(chunk as object), id, model: `Cerebras/${model}` })}\n\n`;
+          }
+          yield 'data: [DONE]\n\n';
+        })();
       });
-
-      return (async function* () {
-        for await (const chunk of stream) {
-          yield `data: ${JSON.stringify({ ...(chunk as any), id, model: `Cerebras/${model}` })}\n\n`;
-        }
-        yield 'data: [DONE]\n\n';
-      })();
     },
   };
 }
 
-export let cerebrasServices: AIService[] = [];
+export async function loadCerebrasServices(): Promise<AIService[]> {
+  try {
+    const models = await withProviderKey('cerebras', async ({ key }) => {
+      const response = await fetch('https://api.cerebras.ai/v1/models', {
+        headers: { Authorization: `Bearer ${key}` },
+      });
+      if (!response.ok) {
+        throw new Error(`Cerebras models HTTP ${response.status}`);
+      }
 
-if (process.env.CEREBRAS_API_KEY) {
-    try {
-        const res = await fetch('https://api.cerebras.ai/v1/models', {
-            headers: { Authorization: `Bearer ${process.env.CEREBRAS_API_KEY}` }
-        });
-        if (res.ok) {
-            const data = await res.json() as any;
-            cerebrasServices = data.data.map((m: any) => createCerebrasService({ id: m.id, supportsTools: true }));
-            console.log(`[Cerebras] ✅ Loaded ${cerebrasServices.length} dynamic models`);
-        }
-    } catch (e: any) {
-        console.error(`[Cerebras] ❌ Fetch failed: ${e.message}`);
-    }
+      const data = await response.json() as {
+        data?: Array<{ id: string }>;
+      };
+
+      return (data.data ?? []).map((model) => createCerebrasService({
+        id: model.id,
+        supportsTools: true,
+      }));
+    });
+
+    logger.info({ provider: 'cerebras', count: models.length }, 'Cerebras models loaded');
+    return models;
+  } catch (err) {
+    logger.warn({ err }, 'Cerebras models could not be loaded');
+    return [];
+  }
 }
-
