@@ -2,6 +2,7 @@ import { loadAlibabaServices } from '../services/alibaba';
 import { loadCerebrasServices } from '../services/cerebras';
 import { loadCodestralServices } from '../services/codestral';
 import { loadCohereServices } from '../services/cohere';
+import { loadCustomServices } from '../services/custom';
 import { loadGeminiServices } from '../services/gemini';
 import { loadGroqServices } from '../services/groq';
 import { loadMistralServices } from '../services/mistral';
@@ -135,6 +136,7 @@ export async function reloadPool(reason: string = 'manual'): Promise<void> {
     nvidiaServices,
     alibabaServices,
     puterServices,
+    customServices,
   ] = await Promise.all([
     loadGroqServices(),
     loadCerebrasServices(),
@@ -146,6 +148,7 @@ export async function reloadPool(reason: string = 'manual'): Promise<void> {
     loadNvidiaServices(),
     loadAlibabaServices(),
     loadPuterServices(),
+    loadCustomServices(),
   ]);
 
   const freeServices = [
@@ -159,6 +162,7 @@ export async function reloadPool(reason: string = 'manual'): Promise<void> {
     ...cohereServices,
     ...nvidiaServices,
     ...puterServices,
+    ...customServices,
   ];
   const settings = getAppSettings();
   const paidServices = settings.openRouterFreeOnly ? [] : openRouter.paidServices;
