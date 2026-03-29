@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="./logo.png" alt="VagaRoute AI Logo" width="1280" style="border-radius: 16px; margin-bottom: 16px;" />
+  <img src="./logo.png" alt="VagaRoute AI Logo" width="512" style="border-radius: 16px; margin-bottom: 16px;" />
   <h1>VagaRoute AI</h1>
 </div>
 
