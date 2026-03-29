@@ -215,6 +215,7 @@ ensureColumn('request_metrics', 'prompt_tokens', 'prompt_tokens INTEGER NOT NULL
 ensureColumn('request_metrics', 'completion_tokens', 'completion_tokens INTEGER NOT NULL DEFAULT 0');
 ensureColumn('request_metrics', 'total_tokens', 'total_tokens INTEGER NOT NULL DEFAULT 0');
 ensureColumn('request_metrics', 'audio_seconds', 'audio_seconds INTEGER NOT NULL DEFAULT 0');
+ensureColumn('request_metrics', 'usage_source', "usage_source TEXT NOT NULL DEFAULT 'estimated'");
 ensureColumn('users', 'monthly_request_quota', 'monthly_request_quota INTEGER');
 ensureColumn('users', 'monthly_budget_usd', 'monthly_budget_usd REAL');
 ensureColumn('users', 'onboarding_completed_at', 'onboarding_completed_at INTEGER');
@@ -226,6 +227,14 @@ ensureColumn('request_metrics', 'error_message', 'error_message TEXT');
 db.exec(`
   CREATE INDEX IF NOT EXISTS idx_user_api_keys_project_id ON user_api_keys(project_id);
   CREATE INDEX IF NOT EXISTS idx_request_metrics_project_id ON request_metrics(project_id);
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS model_tier_overrides (
+    model_id TEXT PRIMARY KEY,
+    tier INTEGER NOT NULL CHECK(tier IN (1, 2, 3)),
+    updated_at INTEGER NOT NULL
+  );
 `);
 
 const getRequestRateLimitBucket = db.prepare(`
@@ -247,6 +256,11 @@ const deleteExpiredRequestRateLimitBuckets = db.prepare(`
   DELETE FROM request_rate_limit_buckets
   WHERE reset_at <= $now
 `);
+
+// Deterministic call counter for probabilistic cleanup.
+// Date.now() % N === 0 only fires ~1/N of the time by CHANCE —
+// this counter ensures exactly 1-in-25 calls triggers cleanup.
+let _rateLimitCallCount = 0;
 
 export type UserRole = 'admin' | 'user';
 
@@ -552,6 +566,8 @@ export interface RequestMetricInput {
   errorMessage?: string | null;
   sourceIp?: string | null;
   createdAt?: number;
+  /** Whether token counts came from the provider response or were locally estimated. */
+  usageSource?: 'provider' | 'estimated';
 }
 
 export interface RequestRateLimitResult {
@@ -2262,11 +2278,13 @@ export function recordRequestMetric(input: RequestMetricInput): void {
   db.query(`
     INSERT INTO request_metrics (
       id, user_id, api_key_id, project_id, method, path, request_type, provider, model, status_code,
-      duration_ms, prompt_tokens, completion_tokens, total_tokens, audio_seconds, estimated_cost_usd, error_message, source_ip, created_at
+      duration_ms, prompt_tokens, completion_tokens, total_tokens, audio_seconds, estimated_cost_usd,
+      error_message, source_ip, usage_source, created_at
     )
     VALUES (
       $id, $userId, $apiKeyId, $projectId, $method, $path, $requestType, $provider, $model, $statusCode,
-      $durationMs, $promptTokens, $completionTokens, $totalTokens, $audioSeconds, $estimatedCostUsd, $errorMessage, $sourceIp, $createdAt
+      $durationMs, $promptTokens, $completionTokens, $totalTokens, $audioSeconds, $estimatedCostUsd,
+      $errorMessage, $sourceIp, $usageSource, $createdAt
     )
   `).run({
     $id: input.id,
@@ -2287,6 +2305,7 @@ export function recordRequestMetric(input: RequestMetricInput): void {
     $estimatedCostUsd: input.estimatedCostUsd ?? 0,
     $errorMessage: input.errorMessage ?? null,
     $sourceIp: input.sourceIp ?? null,
+    $usageSource: input.usageSource ?? 'estimated',
     $createdAt: input.createdAt ?? Date.now(),
   });
 }
@@ -2300,60 +2319,82 @@ export function checkAndIncrementRequestRateLimit(
   const safeWindowMs = Math.max(1_000, Math.floor(windowMs));
   const now = Date.now();
 
-  const result = db.transaction(() => {
-    const row = getRequestRateLimitBucket.get({ $bucketKey: bucketKey }) as {
-      count: number;
-      reset_at: number;
-    } | null;
+  // Bug fix #1: use a deterministic call counter instead of `now % 25 === 0`.
+  // The timestamp modulo trick only fires ~4% of the time by luck; the counter
+  // fires exactly once every 25 calls.
+  _rateLimitCallCount = (_rateLimitCallCount + 1) % 25;
+  const shouldCleanup = _rateLimitCallCount === 0;
 
-    if (!row || row.reset_at <= now) {
-      const resetAt = now + safeWindowMs;
+  try {
+    return db.transaction(() => {
+      const row = getRequestRateLimitBucket.get({ $bucketKey: bucketKey }) as {
+        count: number;
+        reset_at: number;
+      } | null;
+
+      // Bug fix #2: run cleanup INSIDE the transaction so it can never delete a
+      // bucket that was written in this same call (the previous code ran the
+      // delete after the transaction closed, creating a tiny race window).
+      if (shouldCleanup) {
+        deleteExpiredRequestRateLimitBuckets.run({ $now: now });
+      }
+
+      if (!row || row.reset_at <= now) {
+        const resetAt = now + safeWindowMs;
+        upsertRequestRateLimitBucket.run({
+          $bucketKey: bucketKey,
+          $count: 1,
+          $resetAt: resetAt,
+          $updatedAt: now,
+        });
+
+        return {
+          limited: false,
+          limit: safeLimit,
+          remaining: Math.max(0, safeLimit - 1),
+          resetAt,
+        } satisfies RequestRateLimitResult;
+      }
+
+      if (row.count >= safeLimit) {
+        return {
+          limited: true,
+          limit: safeLimit,
+          remaining: 0,
+          resetAt: row.reset_at,
+        } satisfies RequestRateLimitResult;
+      }
+
+      const nextCount = row.count + 1;
       upsertRequestRateLimitBucket.run({
         $bucketKey: bucketKey,
-        $count: 1,
-        $resetAt: resetAt,
+        $count: nextCount,
+        $resetAt: row.reset_at,
         $updatedAt: now,
       });
 
       return {
         limited: false,
         limit: safeLimit,
-        remaining: Math.max(0, safeLimit - 1),
-        resetAt,
-      } satisfies RequestRateLimitResult;
-    }
-
-    if (row.count >= safeLimit) {
-      return {
-        limited: true,
-        limit: safeLimit,
-        remaining: 0,
+        remaining: Math.max(0, safeLimit - nextCount),
         resetAt: row.reset_at,
       } satisfies RequestRateLimitResult;
-    }
-
-    const nextCount = row.count + 1;
-    upsertRequestRateLimitBucket.run({
-      $bucketKey: bucketKey,
-      $count: nextCount,
-      $resetAt: row.reset_at,
-      $updatedAt: now,
+    })();
+  } catch (err) {
+    // Bug fix #3: fail-open on DB errors instead of crashing the request.
+    // A rate-limit DB failure should not take down the API; log and let through.
+    import('../utils/logger').then(({ logger }) => {
+      logger.error({ err, bucketKey }, 'rate-limit: DB error, failing open');
     });
-
     return {
       limited: false,
       limit: safeLimit,
-      remaining: Math.max(0, safeLimit - nextCount),
-      resetAt: row.reset_at,
-    } satisfies RequestRateLimitResult;
-  })();
-
-  if (now % 25 === 0) {
-    deleteExpiredRequestRateLimitBuckets.run({ $now: now });
+      remaining: safeLimit,
+      resetAt: now + safeWindowMs,
+    };
   }
-
-  return result;
 }
+
 
 export function getSpendSummary(scope?: RequestMetricsScope): SpendSummary {
   const range = getMonthRange();
@@ -2902,4 +2943,46 @@ export function getDashboardMetrics(scope?: RequestMetricsScope): DashboardMetri
       totalTokens: summaryRow?.total_tokens ?? 0,
     },
   };
+}
+
+// ─── Model Tier Overrides ─────────────────────────────────────────────────────
+
+export interface ModelTierOverride {
+  modelId: string;
+  tier: 1 | 2 | 3;
+  updatedAt: number;
+}
+
+export function listModelTierOverrides(): ModelTierOverride[] {
+  return (db.query(
+    'SELECT model_id, tier, updated_at FROM model_tier_overrides ORDER BY model_id ASC',
+  ).all() as Array<{ model_id: string; tier: number; updated_at: number }>).map((row) => ({
+    modelId: row.model_id,
+    tier: row.tier as 1 | 2 | 3,
+    updatedAt: row.updated_at,
+  }));
+}
+
+export function getModelTierOverridesMap(): Map<string, 1 | 2 | 3> {
+  const rows = db.query(
+    'SELECT model_id, tier FROM model_tier_overrides',
+  ).all() as Array<{ model_id: string; tier: number }>;
+  return new Map(rows.map((row) => [row.model_id, row.tier as 1 | 2 | 3]));
+}
+
+export function upsertModelTierOverride(modelId: string, tier: 1 | 2 | 3): void {
+  db.query(`
+    INSERT INTO model_tier_overrides (model_id, tier, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(model_id) DO UPDATE SET
+      tier = excluded.tier,
+      updated_at = excluded.updated_at
+  `).run(modelId, tier, Date.now());
+}
+
+export function deleteModelTierOverride(modelId: string): boolean {
+  const result = db.query(
+    'DELETE FROM model_tier_overrides WHERE model_id = ?',
+  ).run(modelId);
+  return result.changes > 0;
 }

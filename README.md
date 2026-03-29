@@ -8,6 +8,8 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![OpenAI Compatible](https://img.shields.io/badge/API-OpenAI%20Compatible-412991?logo=openai)](https://platform.openai.com/docs/api-reference)
 
+> Based on [midudev/bun-ai-api](https://github.com/midudev/bun-ai-api) — improved in my free time.
+
 ---
 
 ## What is VagaRoute AI?
@@ -404,18 +406,56 @@ bun-ai-api/
 
 ## 📋 Comparison
 
-| | VagaRoute AI | LiteLLM | Bifrost | Portkey |
-|---|---|---|---|---|
-| **Runtime** | Bun (TS) | Python | Go | TS/Elixir |
-| **Free-tier focus** | ✅ Core feature | ❌ | ❌ | ❌ |
-| **External deps** | 🟢 None (SQLite) | 🔴 Redis + PG | 🟡 Redis | 🔴 Cloud/PG |
-| **Response cache** | ✅ Memory+SQLite | ✅ Redis only | ✅ Semantic | ✅ Semantic |
-| **Cost tracking** | ✅ Built-in | ✅ | ✅ | ✅ |
-| **Multi-tenancy** | ✅ Projects | ✅ Teams | ✅ Orgs | ✅ Advanced |
-| **Dashboard** | ✅ Built-in | ✅ | ✅ | ✅ |
-| **Image generation** | ✅ Pollinations | Proxy only | Proxy only | ✅ |
-| **Audio transcription** | ✅ Groq + Wit.ai | Proxy only | Proxy only | Proxy only |
-| **Deploy complexity** | 🟢 1 process | 🔴 Complex infra | 🟡 Moderate | 🔴 Cloud/complex |
+> Last updated: March 2026
+
+| | VagaRoute AI | LiteLLM | Bifrost | Portkey | Helicone |
+|---|---|---|---|---|---|
+| **Runtime** | Bun (TS) | Python | Go | Node.js | Rust |
+| **Open source** | ✅ MIT | ✅ MIT | ✅ MIT | ✅ MIT (Mar 2026) | ✅ Apache 2 |
+| **Free-tier focus** | ✅ Core feature | ❌ | ❌ | ❌ | ❌ |
+| **External deps** | 🟢 None (SQLite) | 🔴 Redis + PG + Prisma | 🟡 Optional Redis | 🟢 Stateless | 🔴 Postgres + Redis |
+| **Response cache** | ✅ Memory + SQLite | ✅ Redis required | ✅ Semantic | ✅ Simple + Semantic | ✅ Semantic (Rust) |
+| **Cost tracking** | ✅ Built-in USD | ✅ Built-in | ✅ Built-in | ✅ Built-in | ✅ Built-in |
+| **Token tracking** | ✅ Prompt/completion | ✅ | ✅ | ✅ | ✅ |
+| **Multi-tenancy** | ✅ Projects + budgets | ✅ Teams + budgets | ✅ Orgs + virtual keys | ✅ Workspaces | ✅ Organizations |
+| **Per-user budgets & quotas** | ✅ USD limit + request cap per user | ✅ | ❌ | ✅ | ❌ |
+| **Dashboard** | ✅ Built-in, role-scoped (admin/user) | ✅ Requires PG | ✅ Built-in | ✅ Built-in | ✅ Built-in |
+| **Image generation** | ✅ Pollinations (free, native) | 🟡 Proxy only | 🟡 Proxy only | 🟡 Proxy only | 🟡 Proxy only |
+| **Audio transcription** | ✅ Groq + Wit.ai (native) | 🟡 Proxy only | 🟡 Proxy only | 🟡 Proxy only | 🟡 Proxy only |
+| **Embeddings** | ✅ Mistral + Cohere (native) | 🟡 Proxy only | 🟡 Proxy only | 🟡 Proxy only | 🟡 Proxy only |
+| **Provider count** | ~11 built-in + unlimited custom | 100+ built-in | 20+ built-in | 1,600+ models | 20+ built-in |
+| **Custom providers** | ✅ Any OpenAI-compatible URL, from UI | 🟡 Config file only | 🟡 Config file only | 🟡 Config file only | ❌ |
+| **Failover/retry** | ✅ Up to 10 retries, tier-ordered | ✅ | ✅ | ✅ | ✅ |
+| **Key rotation** | ✅ Auto on 429 / 402 / 401 / 403 | 🟡 Manual | ✅ | ✅ | ✅ |
+| **Rate limiting** | ✅ Per key / user / provider / model | ✅ | ✅ Virtual keys | ✅ | ✅ |
+| **Model tier overrides** | ✅ Per-model UI + `AGENT_MODELS` env pin | ❌ | 🟡 Priority weights | ❌ | ❌ |
+| **Guardrails** | ❌ | 🟡 Basic | ✅ | ✅ | ✅ |
+| **MCP support** | ❌ | ❌ | ✅ MCP gateway | ✅ MCP gateway | ❌ |
+| **First-run onboarding** | ✅ Wizard UI on first boot | ❌ | ❌ | ❌ | ❌ |
+| **Deploy complexity** | 🟢 1 process, 1 command | 🔴 Complex (Redis + PG) | 🟡 Docker recommended | 🟢 `npx` or Docker | 🔴 Requires PG + Redis |
+| **Self-hosted** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Supply-chain safety** | 🟢 Minimal deps | ⚠️ CVE Mar 2026 (v1.82.7/8) | 🟢 Go binaries | 🟢 | 🟢 |
+
+### When to pick VagaRoute AI
+
+- You want a **zero-dependency, single-process** self-hosted gateway — one `bun run start` and you're live
+- You prioritize **free-tier models** — the auto-router picks high-capability free models first (70B+, GPT-4o, Claude 3.5) with tier-based ordering and up to 10-retry failover
+- You need **native image gen and audio transcription**, not a pass-through proxy
+- You want to add **any OpenAI-compatible API as a custom provider** from the dashboard — base URL, AES-encrypted key, per-model tool/vision flags — no config files
+- You want **fine-grained routing control** — manually override model tier priority from the UI, or pin specific models to tool-use routing via `AGENT_MODELS`
+- You need **per-user spend limits** — monthly USD budget and request quota, independent of project-level limits
+- You want **RBAC that actually scales down** — admins see everything; regular users see only their own usage, keys, and projects with no data leakage
+- You want a **first-run onboarding wizard** that takes you from zero to operational in < 2 minutes with no external services
+
+### When to pick an alternative
+
+| Need | Consider |
+|---|---|
+| 100+ providers out of the box | **LiteLLM** (but prepare for Redis + PG overhead) |
+| Ultra-low latency at high RPS (5,000+) | **Bifrost** (Go, ~11 µs overhead) |
+| Enterprise guardrails + MCP gateway | **Portkey** or **Bifrost** |
+| Best-in-class observability (Rust speed) | **Helicone** |
+| Already on Cloudflare infrastructure | **Cloudflare AI Gateway** |
 
 ---
 

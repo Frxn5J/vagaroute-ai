@@ -1,8 +1,11 @@
 import { logger } from './logger';
+import { estimateTextTokens } from '../core/tokenizer';
 
 export function genId(): string {
   return `chatcmpl-${Math.random().toString(36).slice(2, 11)}`;
 }
+
+export type UsageSource = 'provider' | 'estimated';
 
 export interface StreamUsage {
   promptTokens: number;
@@ -78,6 +81,7 @@ export async function collectSSE(source: AsyncIterable<string>): Promise<{
   tool_calls: any[];
   finish_reason: string;
   usage: StreamUsage | null;
+  usageSource: UsageSource;
 }> {
   let content = '';
   const toolCallMap: Record<number, any> = {};
@@ -118,13 +122,31 @@ export async function collectSSE(source: AsyncIterable<string>): Promise<{
   }
 
   const tool_calls = Object.values(toolCallMap);
-  return { content, tool_calls, finish_reason, usage };
+
+  // If the provider didn't report usage, derive completion tokens from collected
+  // content — this is always closer to reality than max_tokens ?? 4096.
+  let finalUsage = usage;
+  let usageSource: UsageSource;
+
+  if (finalUsage && (finalUsage.promptTokens > 0 || finalUsage.completionTokens > 0 || finalUsage.totalTokens > 0)) {
+    usageSource = 'provider';
+  } else {
+    const inferredCompletion = content ? estimateTextTokens(content) : 0;
+    const toolCallTokens = tool_calls.length > 0
+      ? estimateTextTokens(JSON.stringify(tool_calls))
+      : 0;
+    const completionTokens = inferredCompletion + toolCallTokens;
+    finalUsage = finalUsage ?? { promptTokens: 0, completionTokens, totalTokens: completionTokens };
+    usageSource = 'estimated';
+  }
+
+  return { content, tool_calls, finish_reason, usage: finalUsage, usageSource };
 }
 
 export async function* observeSSE(
   source: AsyncIterable<string>,
   callbacks: {
-    onComplete?: (meta: { usage: StreamUsage | null }) => void;
+    onComplete?: (meta: { usage: StreamUsage | null; usageSource: UsageSource }) => void;
   } = {},
 ): AsyncGenerator<string> {
   let usage: StreamUsage | null = null;
@@ -135,6 +157,10 @@ export async function* observeSSE(
       yield line;
     }
   } finally {
-    callbacks.onComplete?.({ usage });
+    const usageSource: UsageSource =
+      usage && (usage.promptTokens > 0 || usage.completionTokens > 0 || usage.totalTokens > 0)
+        ? 'provider'
+        : 'estimated';
+    callbacks.onComplete?.({ usage, usageSource });
   }
 }

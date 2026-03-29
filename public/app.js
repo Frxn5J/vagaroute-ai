@@ -47,6 +47,8 @@ const state = {
     },
   ],
   busy: false,
+  cpDraft: { name: '', baseUrl: '', apiKey: '', models: [] },
+  cpEditing: null,
 };
 
 function getSettingsPages() {
@@ -91,6 +93,12 @@ function getSettingsPages() {
       description: 'Llaves de proveedores externas desde el sistema o el panel para failover.',
     },
     {
+      id: 'custom-providers',
+      label: 'Proveedores',
+      title: 'Proveedores personalizados',
+      description: 'Conecta cualquier API compatible con OpenAI al router con sus propios modelos y configuracion.',
+    },
+    {
       id: 'provider-limits',
       label: 'Limites proveedor',
       title: 'Limites por proveedor',
@@ -101,6 +109,12 @@ function getSettingsPages() {
       label: 'Limites modelo',
       title: 'Limites por modelo',
       description: 'Restringe modelos puntuales sin afectar al resto del proveedor.',
+    },
+    {
+      id: 'model-tiers',
+      label: 'Prioridad de modelos',
+      title: 'Prioridad de modelos',
+      description: 'Controla el orden en que el router elige modelos. Tier 1 tiene maxima prioridad, tier 3 es fallback.',
     },
   ];
 }
@@ -253,6 +267,29 @@ function getSettingsGuideContent(pageId = state.settingsPage) {
         {
           title: 'Cuando usarlo',
           text: 'Es ideal para modelos premium, embeddings costosos o endpoints que se degradan antes que el proveedor completo.',
+        },
+      ],
+    },
+    'model-tiers': {
+      eyebrow: 'Tutorial rapido',
+      title: 'Como funciona la prioridad de modelos',
+      intro: 'El router organiza el pool en tiers. Cuando llega una solicitud con model: auto, intenta primero los modelos de menor numero de tier. Dentro del mismo tier, elige al azar para distribuir carga.',
+      items: [
+        {
+          title: 'Tier 1 — Premium',
+          text: 'Modelos grandes y capaces como GPT-4, Claude Opus o Gemini Pro. El router los prioriza cuando estan disponibles y la solicitud los admite.',
+        },
+        {
+          title: 'Tier 2 — Balanceado',
+          text: 'Modelos de capacidad media como Sonnet, Flash o Mixtral. Cubren la mayoria de los casos de uso con buena relacion velocidad-calidad.',
+        },
+        {
+          title: 'Tier 3 — Rapido',
+          text: 'Modelos livianos y rapidos. Se usan como fallback o para tareas simples. Los modelos de pago siempre van despues de cualquier tier gratuito.',
+        },
+        {
+          title: 'Overrides y Auto',
+          text: 'Puedes forzar un tier distinto al calculado automaticamente. Auto restaura el valor original basado en el nombre del modelo. Los cambios aplican de inmediato al pool.',
         },
       ],
     },
@@ -2152,6 +2189,296 @@ function renderSettingsGuideModal() {
   `;
 }
 
+function renderModelsBuilder(models, scope) {
+  const rows = models.map((model, index) => `
+    <div class="cp-model-row">
+      <input
+        type="text"
+        placeholder="proveedor/nombre-modelo"
+        value="${escapeHtml(model.id)}"
+        data-action="cp-model-field"
+        data-scope="${escapeHtml(scope)}"
+        data-index="${index}"
+        data-field="id"
+      />
+      <label class="cp-check">
+        <input
+          type="checkbox"
+          data-action="cp-model-field"
+          data-scope="${escapeHtml(scope)}"
+          data-index="${index}"
+          data-field="supportsTools"
+          ${model.supportsTools ? 'checked' : ''}
+        />
+        Tools
+      </label>
+      <label class="cp-check">
+        <input
+          type="checkbox"
+          data-action="cp-model-field"
+          data-scope="${escapeHtml(scope)}"
+          data-index="${index}"
+          data-field="supportsVision"
+          ${model.supportsVision ? 'checked' : ''}
+        />
+        Vision
+      </label>
+      <button
+        class="ghost-button"
+        type="button"
+        data-action="cp-remove-model"
+        data-scope="${escapeHtml(scope)}"
+        data-index="${index}"
+        style="padding: 0.4rem 0.6rem;"
+        title="Eliminar modelo"
+      >×</button>
+    </div>
+  `).join('');
+
+  return `
+    <div class="cp-models-section">
+      <div class="row-between" style="margin-bottom: 0.6rem;">
+        <span style="font-size: 0.8rem; font-weight: 600; color: var(--muted-light); letter-spacing: 0.01em;">Modelos</span>
+        <button class="ghost-button" type="button" data-action="cp-add-model" data-scope="${escapeHtml(scope)}" style="padding: 0.35rem 0.75rem; font-size: 0.8rem;">
+          + Agregar modelo
+        </button>
+      </div>
+      ${rows || '<div class="empty-state" style="padding: 0.875rem; text-align: left;">Agrega al menos un modelo para habilitar el proveedor.</div>'}
+    </div>
+  `;
+}
+
+function renderSettingsCustomProviders() {
+  const providers = state.dashboard.customProviders || [];
+  const draft = state.cpDraft;
+  const editing = state.cpEditing;
+
+  const createForm = `
+    <article class="panel">
+      <h3>Nuevo proveedor</h3>
+      <p class="muted">Conecta cualquier endpoint compatible con OpenAI. El router lo incluye en el pool automaticamente.</p>
+      <form data-form="create-custom-provider" style="margin-top: 1rem;">
+        <div class="grid-2">
+          <label>Nombre
+            <input name="name" placeholder="Mi proveedor local" required value="${escapeHtml(draft.name)}" data-action="cp-draft-name" />
+          </label>
+          <label>Base URL
+            <input name="baseUrl" placeholder="https://api.ejemplo.com/v1" required value="${escapeHtml(draft.baseUrl)}" data-action="cp-draft-baseUrl" />
+          </label>
+        </div>
+        <label>API Key <span class="muted" style="font-weight: 400;">(opcional)</span>
+          <input name="apiKey" type="password" placeholder="sk-..." autocomplete="new-password" value="${escapeHtml(draft.apiKey)}" data-action="cp-draft-apiKey" />
+        </label>
+        ${renderModelsBuilder(draft.models, 'draft')}
+        <div class="button-row">
+          <button class="primary-button" type="submit">Crear proveedor</button>
+        </div>
+      </form>
+    </article>
+  `;
+
+  const editPanel = editing ? `
+    <article class="panel" style="border-color: var(--accent); border-left-width: 2px;">
+      <div class="row-between" style="margin-bottom: 1rem;">
+        <div>
+          <h3>Editando: ${escapeHtml(editing.name)}</h3>
+          <p class="muted">Slug: <code style="font-family: var(--font-mono); font-size: 0.8rem;">${escapeHtml(editing.slug)}</code></p>
+        </div>
+        <button class="ghost-button" type="button" data-action="cancel-edit-custom-provider">Cancelar</button>
+      </div>
+      <form data-form="edit-custom-provider">
+        <input type="hidden" name="id" value="${escapeHtml(editing.id)}" />
+        <div class="grid-2">
+          <label>Nombre
+            <input name="name" required value="${escapeHtml(editing.name)}" />
+          </label>
+          <label>Base URL
+            <input name="baseUrl" required value="${escapeHtml(editing.baseUrl)}" />
+          </label>
+        </div>
+        <label>${editing.hasApiKey ? 'Nueva API Key <span class="muted" style="font-weight:400;">(dejar vacío para conservar la actual)</span>' : 'API Key <span class="muted" style="font-weight:400;">(opcional)</span>'}
+          <input name="newApiKey" type="password" placeholder="${editing.hasApiKey ? 'Nueva clave o vacío para no cambiar' : 'sk-...'}" autocomplete="new-password" />
+        </label>
+        ${editing.hasApiKey ? `
+          <div>
+            <button class="danger-button" type="button" data-action="cp-clear-api-key" style="font-size: 0.8rem;">
+              Eliminar API key almacenada
+            </button>
+          </div>
+        ` : ''}
+        ${renderModelsBuilder(editing.models, 'edit')}
+        <div class="button-row">
+          <button class="primary-button" type="submit">Guardar cambios</button>
+          <button class="ghost-button" type="button" data-action="cancel-edit-custom-provider">Cancelar</button>
+        </div>
+      </form>
+    </article>
+  ` : '';
+
+  const providerList = `
+    <article class="panel">
+      <div class="row-between">
+        <div>
+          <h3>Proveedores registrados</h3>
+          <p class="muted">${providers.length === 0 ? 'No hay proveedores personalizados todavia.' : `${providers.length} proveedor${providers.length !== 1 ? 'es' : ''} en el pool.`}</p>
+        </div>
+      </div>
+      ${providers.length === 0 ? `
+        <div class="empty-state" style="margin-top: 0.75rem;">
+          Crea tu primer proveedor arriba para empezar a usarlo en el router.
+        </div>
+      ` : `
+        <div class="cp-provider-list">
+          ${providers.map((provider) => `
+            <div class="cp-provider-row ${editing?.id === provider.id ? 'cp-provider-row--editing' : ''}">
+              <div class="cp-provider-info">
+                <div class="row-between">
+                  <div style="display: flex; align-items: center; gap: 0.625rem;">
+                    <strong>${escapeHtml(provider.name)}</strong>
+                    <span class="tag ${provider.isActive ? 'success' : ''}">${provider.isActive ? 'Activo' : 'Inactivo'}</span>
+                    ${provider.hasApiKey ? '<span class="tag">Con clave</span>' : '<span class="tag warn">Sin clave</span>'}
+                  </div>
+                  <div class="button-row">
+                    <button
+                      class="${provider.isActive ? 'ghost-button' : 'secondary-button'}"
+                      type="button"
+                      data-action="toggle-custom-provider"
+                      data-id="${escapeHtml(provider.id)}"
+                      data-active="${provider.isActive}"
+                    >${provider.isActive ? 'Desactivar' : 'Activar'}</button>
+                    <button
+                      class="ghost-button"
+                      type="button"
+                      data-action="edit-custom-provider"
+                      data-id="${escapeHtml(provider.id)}"
+                    >Editar</button>
+                    <button
+                      class="danger-button"
+                      type="button"
+                      data-action="delete-custom-provider"
+                      data-id="${escapeHtml(provider.id)}"
+                    >Eliminar</button>
+                  </div>
+                </div>
+                <div class="cp-provider-meta">
+                  <span class="muted">Slug:</span>
+                  <code style="font-family: var(--font-mono); font-size: 0.78rem; color: var(--muted-light);">${escapeHtml(provider.slug)}</code>
+                  <span class="muted">·</span>
+                  <span class="muted">URL:</span>
+                  <code style="font-family: var(--font-mono); font-size: 0.78rem; color: var(--muted-light);">${escapeHtml(provider.baseUrl)}</code>
+                  <span class="muted">·</span>
+                  <span class="muted">${provider.models.length} modelo${provider.models.length !== 1 ? 's' : ''}</span>
+                </div>
+                ${provider.models.length > 0 ? `
+                  <div class="cp-model-tags">
+                    ${provider.models.map((model) => `
+                      <span class="tag">
+                        ${escapeHtml(model.id)}
+                        ${model.supportsTools ? '<span title="Tools">⚙</span>' : ''}
+                        ${model.supportsVision ? '<span title="Vision">👁</span>' : ''}
+                      </span>
+                    `).join('')}
+                  </div>
+                ` : ''}
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      `}
+    </article>
+  `;
+
+  return `
+    ${createForm}
+    ${editPanel}
+    ${providerList}
+  `;
+}
+
+function renderSettingsModelTiers() {
+  const models = (state.dashboard.pool?.models || []).filter((m) => !m.paidOnly);
+  const overrides = state.dashboard.modelTierOverrides || [];
+  const overrideMap = new Map(overrides.map((o) => [o.modelId, o.tier]));
+
+  const tierLabel = { 1: 'Premium', 2: 'Balanceado', 3: 'Rapido' };
+  const tierClass = { 1: 'success', 2: '', 3: 'warn' };
+
+  const rows = models.map((model) => {
+    const override = overrideMap.get(model.id);
+    const currentTier = model.tier ?? 3;
+    const isOverridden = override !== undefined;
+
+    return `
+      <tr>
+        <td>
+          <div style="font-family: var(--font-mono); font-size: 0.78rem;">${escapeHtml(model.id)}</div>
+          ${isOverridden ? '<span class="tag" style="font-size: 0.7rem; margin-top: 0.2rem;">Override</span>' : ''}
+        </td>
+        <td><span class="tag">${escapeHtml(formatProviderLabel(model.provider))}</span></td>
+        <td>
+          <span class="tag ${escapeHtml(tierClass[currentTier] || '')}">
+            Tier ${escapeHtml(currentTier)} — ${escapeHtml(tierLabel[currentTier] || 'Custom')}
+          </span>
+        </td>
+        <td>
+          <div class="button-row" style="gap: 0.3rem;">
+            ${[1, 2, 3].map((t) => `
+              <button
+                class="${currentTier === t && isOverridden ? 'secondary-button' : 'ghost-button'}"
+                type="button"
+                data-action="set-model-tier"
+                data-model="${escapeHtml(model.id)}"
+                data-tier="${t}"
+                style="padding: 0.3rem 0.6rem; font-size: 0.78rem;"
+                title="Forzar tier ${t}"
+              >${t}</button>
+            `).join('')}
+            ${isOverridden ? `
+              <button
+                class="ghost-button"
+                type="button"
+                data-action="reset-model-tier"
+                data-model="${escapeHtml(model.id)}"
+                style="padding: 0.3rem 0.6rem; font-size: 0.78rem; color: var(--muted);"
+                title="Restaurar tier automatico"
+              >Auto</button>
+            ` : `
+              <span style="padding: 0.3rem 0.6rem; font-size: 0.78rem; color: var(--muted);">Auto</span>
+            `}
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  return `
+    <article class="panel">
+      <h3>Modelos en el pool</h3>
+      <p class="muted">
+        Los modelos de pago siempre van al final. Los cambios recargan el pool de inmediato.
+        ${overrides.length > 0 ? `<strong>${overrides.length} override${overrides.length !== 1 ? 's' : ''} activo${overrides.length !== 1 ? 's' : ''}.</strong>` : ''}
+      </p>
+      ${models.length === 0 ? `
+        <div class="empty-state">No hay modelos gratuitos en el pool en este momento.</div>
+      ` : `
+        <div class="table-wrap" style="margin-top: 1rem;">
+          <table>
+            <thead>
+              <tr>
+                <th>Modelo</th>
+                <th>Proveedor</th>
+                <th>Tier actual</th>
+                <th>Cambiar tier</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      `}
+    </article>
+  `;
+}
+
 function renderSettingsMultiPage() {
   const dashboard = state.dashboard;
   const isAdminUser = dashboard.auth.isAdmin;
@@ -2641,6 +2968,14 @@ function renderSettingsMultiPage() {
     `;
   }
 
+  if (state.settingsPage === 'custom-providers') {
+    pageContent = renderSettingsCustomProviders();
+  }
+
+  if (isAdminUser && state.settingsPage === 'model-tiers') {
+    pageContent = renderSettingsModelTiers();
+  }
+
   return `
     <section class="settings-shell">
       <aside class="settings-nav panel">
@@ -3098,6 +3433,62 @@ async function submitUpdateServiceKey(form) {
   setFlash('Service key actualizada.');
 }
 
+async function submitCreateCustomProvider(form) {
+  const formData = new FormData(form);
+  const models = state.cpDraft.models.filter((m) => m.id.trim());
+  if (models.length === 0) {
+    throw new Error('Agrega al menos un modelo al proveedor.');
+  }
+  await apiRequest('/api/custom-providers', {
+    method: 'POST',
+    body: {
+      name: String(formData.get('name') || '').trim(),
+      baseUrl: String(formData.get('baseUrl') || '').trim(),
+      apiKey: String(formData.get('apiKey') || '').trim() || null,
+      models: models.map((m) => ({
+        id: m.id.trim(),
+        supportsTools: Boolean(m.supportsTools),
+        supportsVision: Boolean(m.supportsVision),
+      })),
+    },
+  });
+  state.cpDraft = { name: '', baseUrl: '', apiKey: '', models: [] };
+  await refreshDashboard();
+  setFlash('Proveedor creado. Pool recargado.');
+}
+
+async function submitUpdateCustomProvider(form) {
+  const formData = new FormData(form);
+  const id = String(formData.get('id') || '');
+  if (!id || !state.cpEditing) {
+    throw new Error('No hay proveedor en edicion.');
+  }
+  const models = state.cpEditing.models.filter((m) => m.id.trim());
+  if (models.length === 0) {
+    throw new Error('El proveedor debe tener al menos un modelo.');
+  }
+  const newApiKey = String(formData.get('newApiKey') || '').trim();
+  const payload = {
+    name: String(formData.get('name') || '').trim() || undefined,
+    baseUrl: String(formData.get('baseUrl') || '').trim() || undefined,
+    models: models.map((m) => ({
+      id: m.id.trim(),
+      supportsTools: Boolean(m.supportsTools),
+      supportsVision: Boolean(m.supportsVision),
+    })),
+  };
+  if (newApiKey) {
+    payload.apiKey = newApiKey;
+  }
+  await apiRequest(`/api/custom-providers/${id}`, {
+    method: 'PATCH',
+    body: payload,
+  });
+  state.cpEditing = null;
+  await refreshDashboard();
+  setFlash('Proveedor actualizado. Pool recargado.');
+}
+
 async function submitUpdateProviderLimit(form) {
   const formData = new FormData(form);
   const provider = normalizeProviderId(formData.get('provider'));
@@ -3197,6 +3588,8 @@ async function handleSubmit(event) {
     if (formType === 'update-service-key') await submitUpdateServiceKey(form);
     if (formType === 'update-provider-limit') await submitUpdateProviderLimit(form);
     if (formType === 'update-model-limit') await submitUpdateModelLimit(form);
+    if (formType === 'create-custom-provider') await submitCreateCustomProvider(form);
+    if (formType === 'edit-custom-provider') await submitUpdateCustomProvider(form);
   } catch (error) {
     setFlash(error.message || 'No se pudo completar la accion.', 'error');
   }
@@ -3373,6 +3766,106 @@ async function handleClick(event) {
       await refreshDashboard();
       setFlash('Estados del router reiniciados.');
     }
+
+    if (action === 'cp-add-model') {
+      const scope = target.dataset.scope;
+      const models = scope === 'edit' ? state.cpEditing?.models : state.cpDraft.models;
+      if (models) {
+        models.push({ id: '', supportsTools: false, supportsVision: false });
+        render();
+      }
+      return;
+    }
+
+    if (action === 'cp-remove-model') {
+      const scope = target.dataset.scope;
+      const index = Number(target.dataset.index);
+      const models = scope === 'edit' ? state.cpEditing?.models : state.cpDraft.models;
+      if (models) {
+        models.splice(index, 1);
+        render();
+      }
+      return;
+    }
+
+    if (action === 'edit-custom-provider') {
+      const id = target.dataset.id;
+      const providers = state.dashboard.customProviders || [];
+      const provider = providers.find((p) => p.id === id);
+      if (provider) {
+        state.cpEditing = {
+          id: provider.id,
+          name: provider.name,
+          slug: provider.slug,
+          baseUrl: provider.baseUrl,
+          hasApiKey: provider.hasApiKey,
+          models: provider.models.map((m) => ({ ...m })),
+        };
+        render();
+      }
+      return;
+    }
+
+    if (action === 'cancel-edit-custom-provider') {
+      state.cpEditing = null;
+      render();
+      return;
+    }
+
+    if (action === 'cp-clear-api-key') {
+      if (!state.cpEditing) return;
+      await apiRequest(`/api/custom-providers/${state.cpEditing.id}`, {
+        method: 'PATCH',
+        body: { apiKey: null },
+      });
+      state.cpEditing.hasApiKey = false;
+      await refreshDashboard();
+      setFlash('API key eliminada del proveedor.');
+      return;
+    }
+
+    if (action === 'toggle-custom-provider') {
+      const id = target.dataset.id;
+      const active = target.dataset.active === 'true';
+      await apiRequest(`/api/custom-providers/${id}`, {
+        method: 'PATCH',
+        body: { isActive: !active },
+      });
+      await refreshDashboard();
+      setFlash(`Proveedor ${active ? 'desactivado' : 'activado'}.`);
+      return;
+    }
+
+    if (action === 'delete-custom-provider') {
+      const id = target.dataset.id;
+      if (!confirm('¿Eliminar este proveedor y quitar sus modelos del pool?')) return;
+      await apiRequest(`/api/custom-providers/${id}`, { method: 'DELETE' });
+      if (state.cpEditing?.id === id) state.cpEditing = null;
+      await refreshDashboard();
+      setFlash('Proveedor eliminado del pool.');
+      return;
+    }
+
+    if (action === 'set-model-tier') {
+      const modelId = target.dataset.model;
+      const tier = Number(target.dataset.tier);
+      await apiRequest('/api/model-tiers', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ modelId, tier }),
+      });
+      await refreshDashboard();
+      setFlash(`Tier ${tier} aplicado a ${modelId}. Pool recargado.`);
+      return;
+    }
+
+    if (action === 'reset-model-tier') {
+      const modelId = target.dataset.model;
+      await apiRequest(`/api/model-tiers/${encodeURIComponent(modelId)}`, { method: 'DELETE' });
+      await refreshDashboard();
+      setFlash(`Tier de ${modelId} restaurado a automatico.`);
+      return;
+    }
   } catch (error) {
     setFlash(error.message || 'No se pudo completar la accion.', 'error');
   }
@@ -3412,6 +3905,39 @@ function handleInput(event) {
   if (action === 'playground-auth-mode' && target instanceof HTMLSelectElement) {
     state.playgroundAuthMode = target.value;
     render();
+  }
+
+  if (action === 'cp-draft-name' && target instanceof HTMLInputElement) {
+    state.cpDraft.name = target.value;
+    return;
+  }
+
+  if (action === 'cp-draft-baseUrl' && target instanceof HTMLInputElement) {
+    state.cpDraft.baseUrl = target.value;
+    return;
+  }
+
+  if (action === 'cp-draft-apiKey' && target instanceof HTMLInputElement) {
+    state.cpDraft.apiKey = target.value;
+    return;
+  }
+
+  if (action === 'cp-model-field') {
+    const scope = target.dataset.scope;
+    const index = Number(target.dataset.index);
+    const field = target.dataset.field;
+    const models = scope === 'edit' ? state.cpEditing?.models : state.cpDraft.models;
+    if (!models || !models[index] || !field) return;
+    if (field === 'id' && target instanceof HTMLInputElement) {
+      models[index].id = target.value;
+    }
+    if (field === 'supportsTools' && target instanceof HTMLInputElement) {
+      models[index].supportsTools = target.checked;
+    }
+    if (field === 'supportsVision' && target instanceof HTMLInputElement) {
+      models[index].supportsVision = target.checked;
+    }
+    return;
   }
 }
 

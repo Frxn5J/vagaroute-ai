@@ -1356,6 +1356,98 @@ tbody tr:hover td {
 }
 
 /* ============================================================
+   CUSTOM PROVIDERS
+   ============================================================ */
+input[type="checkbox"],
+input[type="radio"] {
+  width: auto;
+  padding: 0;
+  min-width: 0;
+  accent-color: var(--accent);
+  -webkit-appearance: checkbox;
+  appearance: checkbox;
+}
+
+.cp-models-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 0.875rem;
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+}
+
+.cp-model-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto auto;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.cp-model-row:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.cp-model-row:first-child {
+  padding-top: 0;
+}
+
+.cp-check {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--muted-light);
+  white-space: nowrap;
+  cursor: pointer;
+  padding: 0 0.25rem;
+}
+
+.cp-check input {
+  cursor: pointer;
+}
+
+.cp-provider-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.875rem;
+}
+
+.cp-provider-row {
+  padding: 1rem;
+  border-radius: var(--radius);
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  transition: border-color var(--transition);
+}
+
+.cp-provider-row--editing {
+  border-color: var(--accent);
+}
+
+.cp-provider-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.4rem;
+  flex-wrap: wrap;
+  font-size: 0.78rem;
+}
+
+.cp-model-tags {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin-top: 0.5rem;
+}
+
+/* ============================================================
    SCROLLBARS
    ============================================================ */
 ::-webkit-scrollbar {

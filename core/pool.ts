@@ -14,6 +14,7 @@ import { logger } from '../utils/logger';
 import {
   getAllModelStats,
   getAppSettings,
+  getModelTierOverridesMap,
   getModelUsageSnapshots,
   getProviderCooldownMap,
   getProviderUsageSnapshots,
@@ -95,6 +96,7 @@ function buildStates(freeServices: AIService[], paidServices: AIService[]): Serv
 
   const dbStats = getAllModelStats();
   const dbStatusMap = new Map(dbStats.map((row) => [row.id, row]));
+  const tierOverrides = getModelTierOverridesMap();
 
   return [
     ...freeServices.map((service) => {
@@ -104,7 +106,7 @@ function buildStates(freeServices: AIService[], paidServices: AIService[]): Serv
         cooldownUntil: dbRow?.rate_limited_until ?? 0,
         disabled: dbRow?.status === 'disabled',
         paidOnly: false,
-        tier: getModelTier(service.name),
+        tier: tierOverrides.get(service.name) ?? getModelTier(service.name),
       };
     }),
     ...paidServices.map((service) => {
