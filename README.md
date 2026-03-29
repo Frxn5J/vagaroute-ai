@@ -29,6 +29,9 @@ Your App  →  VagaRoute AI Gateway  →  Groq / Gemini / OpenRouter / Mistral /
 
 ---
 
+<img width="1918" height="907" alt="imagen" src="https://github.com/user-attachments/assets/65a52fd4-8670-495a-94dc-78d35bb38527" />
+
+
 ## ✨ Key Features
 
 ### 🔀 Intelligent Routing
@@ -37,6 +40,12 @@ Your App  →  VagaRoute AI Gateway  →  Groq / Gemini / OpenRouter / Mistral /
 - **Tool-use routing** — filters providers that support function calling
 - **Vision routing** — filters providers that support image inputs
 - **Automatic failover** — up to 10 retries across providers when one fails
+
+<img width="1559" height="808" alt="imagen" src="https://github.com/user-attachments/assets/be037449-0af2-4ced-8b0a-3176d6dd59a7" />
+<img width="1289" height="581" alt="imagen" src="https://github.com/user-attachments/assets/42ccf756-766d-4cd8-9512-74cafe777d17" />
+<img width="1912" height="879" alt="imagen" src="https://github.com/user-attachments/assets/8b2aa5a9-250b-4c7f-9416-b6075f2839e4" />
+<img width="1577" height="821" alt="imagen" src="https://github.com/user-attachments/assets/c6fc2cc2-84f9-4ced-b572-e567531088b8" />
+
 
 ### 📦 Supported Providers
 | Provider | Free Tier | Chat | Tools | Vision | Images | Audio | Embeddings |
