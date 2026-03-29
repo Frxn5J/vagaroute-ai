@@ -3200,19 +3200,15 @@ async function submitAcceptInvite(form) {
 
 async function submitPasswordResetRequest(form) {
   const formData = new FormData(form);
-  const result = await apiRequest('/api/auth/password-reset/request', {
+  await apiRequest('/api/auth/password-reset/request', {
     method: 'POST',
     body: {
       email: formData.get('email'),
     },
     allow401: true,
   });
-  if (result.resetUrl) {
-    state.lastCreatedApiKey = result.resetUrl;
-    state.sharedValueKind = 'reset-link';
-  }
   state.authMode = 'login';
-  setFlash(result.resetUrl ? 'Link temporal generado. Copialo ahora.' : 'Si el correo existe, se genero un reset temporal.');
+  setFlash('Si el correo existe, el administrador vera el link temporal en la terminal del servidor.');
   render();
 }
 
@@ -3547,14 +3543,10 @@ async function toggleServiceKey(id, active) {
 }
 
 async function requestManagedPasswordReset(userId) {
-  const result = await apiRequest(`/api/users/${userId}/password-reset`, {
+  await apiRequest(`/api/users/${userId}/password-reset`, {
     method: 'POST',
   });
-  if (result.resetUrl) {
-    state.lastCreatedApiKey = result.resetUrl;
-    state.sharedValueKind = 'reset-link';
-  }
-  setFlash('Link temporal de recuperacion generado.');
+  setFlash('Link temporal generado. Revisa la terminal del servidor para copiarlo.');
 }
 
 async function handleSubmit(event) {

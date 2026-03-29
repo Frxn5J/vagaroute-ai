@@ -1,7 +1,6 @@
 import {
   getInvitationTokenByHash,
 } from '../core/db';
-import { appConfig } from '../core/config';
 import {
   bootstrapAdmin,
   buildSessionCookie,
@@ -83,10 +82,11 @@ export async function handlePreAuthRoutes(
     try {
       const body = await readJsonBody<{ email: string }>(req);
       const result = await requestPasswordReset({ email: body.email });
-      const resetUrl = result
-        ? `${new URL(req.url).origin}/?reset=${encodeURIComponent(result.rawToken)}`
-        : null;
-      return jsonResponse(req, { ok: true, resetUrl: appConfig.isProduction ? null : resetUrl });
+      if (result) {
+        const resetUrl = `${new URL(req.url).origin}/?reset=${encodeURIComponent(result.rawToken)}`;
+        console.log(`\n[PASSWORD RESET] Link para ${body.email}:\n  ${resetUrl}\n`);
+      }
+      return jsonResponse(req, { ok: true });
     } catch (err) {
       const message = (err as { message?: string })?.message ?? 'No se pudo generar el reset';
       return errorResponse(req, 400, message, 'reset_error');

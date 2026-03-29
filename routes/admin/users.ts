@@ -86,10 +86,11 @@ export async function handleUsers(
     const user = getUserById(userResetMatch[1] ?? '');
     if (!user) return errorResponse(req, 404, 'Usuario no encontrado', 'not_found');
     const result = await requestPasswordReset({ email: user.email, requestedByUserId: auth.user.id });
-    return jsonResponse(req, {
-      ok: true,
-      resetUrl: result ? `${new URL(req.url).origin}/?reset=${encodeURIComponent(result.rawToken)}` : null,
-    });
+    if (result) {
+      const resetUrl = `${new URL(req.url).origin}/?reset=${encodeURIComponent(result.rawToken)}`;
+      console.log(`\n[PASSWORD RESET] Link para ${user.email} (generado por admin):\n  ${resetUrl}\n`);
+    }
+    return jsonResponse(req, { ok: true });
   }
 
   return null;
