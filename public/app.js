@@ -1036,6 +1036,7 @@ function renderAuthCard({ title, subtitle, body, sideTitle, sideText, sideList }
         </div>
         <div class="auth-form">
           <div>
+            <img src="/logo.png" alt="VagaRoute AI Logo" style="max-height: 64px; margin-bottom: 1.5rem; border-radius: 12px; display: block;" />
             <p class="tag">${escapeHtml(getAppName())}</p>
             <h1>${escapeHtml(title)}</h1>
             <p class="muted">${escapeHtml(subtitle)}</p>
@@ -3027,6 +3028,7 @@ function renderAppShell() {
     <div class="shell">
       <aside class="sidebar">
         <div class="brand">
+          <img src="/logo.png" alt="VagaRoute AI Logo" style="max-height: 48px; margin-bottom: 1rem; border-radius: 8px; display: block;" />
           <p class="tag">${escapeHtml(getAppName())}</p>
           <h1>VagaRoute AI</h1>
           <p>Control oscuro, sobrio y operativo para seguridad, llaves, playground y uso del API.</p>

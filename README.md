@@ -1,4 +1,7 @@
-# VagaRoute AI
+<div align="center">
+  <img src="./logo.png" alt="VagaRoute AI Logo" width="128" style="border-radius: 16px; margin-bottom: 16px;" />
+  <h1>VagaRoute AI</h1>
+</div>
 
 > **Self-hosted AI Gateway** — Unified API for 10+ LLM providers with zero external dependencies.
 
