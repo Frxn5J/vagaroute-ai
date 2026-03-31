@@ -24,6 +24,7 @@ import { handleProjects } from './routes/admin/projects';
 import { handleRateLimits } from './routes/admin/rateLimits';
 import { handleServiceKeys } from './routes/admin/serviceKeys';
 import { handleSettings } from './routes/admin/settings';
+import { handleModelAliases } from './routes/admin/modelAliases';
 import { handleUsers } from './routes/admin/users';
 import { errorResponse, jsonResponse, type RouteContext } from './routes/_shared';
 
@@ -105,6 +106,7 @@ function applyServiceRateLimit(req: Request, auth: Awaited<ReturnType<typeof aut
 
 const AUTHED_HANDLERS = [
   handleSettings,
+  handleModelAliases,
   handleUsers,
   handleApiKeys,
   handleProjects,

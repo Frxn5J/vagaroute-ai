@@ -39,6 +39,7 @@ const state = {
   playgroundBusy: false,
   playgroundAudioProvider: 'groq',
   playgroundAudioLanguage: 'es',
+  modelAliasCategory: 'chat',
   chatDraft: '',
   chatModel: 'auto',
   chatMessages: [
@@ -116,6 +117,12 @@ function getSettingsPages() {
       label: 'Prioridad de modelos',
       title: 'Prioridad de modelos',
       description: 'Controla el orden en que el router elige modelos. Tier 1 tiene maxima prioridad, tier 3 es fallback.',
+    },
+    {
+      id: 'model-aliases',
+      label: 'Compatibilidad',
+      title: 'Compatibilidad de modelos',
+      description: 'Crea alias para mapear modelos externos hacia modelos reales del pool. Permite compatibilidad con clientes que usan nombres de modelos especificos.',
     },
   ];
 }
@@ -294,6 +301,25 @@ function getSettingsGuideContent(pageId = state.settingsPage) {
         },
       ],
     },
+    'model-aliases': {
+      eyebrow: 'Tutorial rapido',
+      title: 'Como usar la compatibilidad de modelos',
+      intro: 'Los alias te permiten mapear un nombre de modelo externo hacia un modelo real del pool. Esto es util para mantener compatibilidad con clientes que usan nombres especificos.',
+      items: [
+        {
+          title: 'Crear un alias',
+          text: 'Elige un alias (como gpt-4) y selecciona el modelo target del pool (como Groq/llama-3.3-70b). El router resolvara el alias automaticamente.',
+        },
+        {
+          title: 'Como funciona',
+          text: 'Cuando un cliente llama con model: gpt-4, el router lo transforma a Groq/llama-3.3-70b antes de hacer la peticion. La respuesta muestra el alias original.',
+        },
+        {
+          title: 'Alias vs virtuales',
+          text: 'Los modelos virtuales (auto, img, tools) siguen funcionando igual. Los alias solo aplican cuando se especifica un nombre de modelo explicito.',
+        },
+      ],
+    },
   };
 
   return guides[pageId] || guides.general;
@@ -420,13 +446,39 @@ function getProjectOptions() {
   return state.dashboard?.projects || [];
 }
 
-function setFlash(message, type = 'info') {
-  state.flash = { message, type };
+function setFlash(message, type = 'info', details = '') {
+  state.flash = { message, type, details };
   render();
 }
 
 function clearFlash() {
   state.flash = null;
+}
+
+function formatApiErrorDetails(response, payload) {
+  const requestId = response.headers.get('x-request-id') || null;
+  const details = {
+    status: response.status,
+    requestId,
+    payload,
+  };
+
+  try {
+    return JSON.stringify(details, null, 2);
+  } catch {
+    return `HTTP ${response.status}${requestId ? ` | requestId: ${requestId}` : ''}`;
+  }
+}
+
+function buildFlashFromError(error, fallbackMessage) {
+  if (error && typeof error === 'object') {
+    return {
+      message: typeof error.message === 'string' && error.message.trim() ? error.message : fallbackMessage,
+      details: typeof error.flashDetails === 'string' ? error.flashDetails : '',
+    };
+  }
+
+  return { message: fallbackMessage, details: '' };
 }
 
 async function apiRequest(url, options = {}) {
@@ -458,7 +510,9 @@ async function apiRequest(url, options = {}) {
     const errorMessage = typeof payload === 'object' && payload?.error?.message
       ? payload.error.message
       : `HTTP ${response.status}`;
-    throw new Error(errorMessage);
+    const error = new Error(errorMessage);
+    error.flashDetails = formatApiErrorDetails(response, payload);
+    throw error;
   }
 
   return payload;
@@ -694,6 +748,175 @@ function getModelOptions() {
   ];
 }
 
+const PLAYGROUND_MODEL_GROUPS = {
+  chat: [
+    {
+      label: 'Virtuales',
+      options: [
+        { id: 'auto', label: 'auto' },
+        { id: 'tools', label: 'tools' },
+        { id: 'img', label: 'img' },
+      ],
+    },
+  ],
+  images: [
+    {
+      label: 'Modelos nativos · Pollinations',
+      options: [
+        { id: 'flux', label: 'flux' },
+        { id: 'sdxl', label: 'sdxl' },
+        { id: 'turbo', label: 'turbo' },
+        { id: 'playground', label: 'playground' },
+        { id: 'illustrious', label: 'illustrious' },
+      ],
+    },
+    {
+      label: 'Modelos nativos · Qwen Chat',
+      options: [
+        { id: 'qwen-image', label: 'qwen-image' },
+        { id: 'wan', label: 'wan' },
+        { id: 'imagegeneration', label: 'imagegeneration' },
+        { id: 'qwenimage', label: 'qwenimage' },
+      ],
+    },
+  ],
+  imageEdit: [
+    {
+      label: 'Modelos nativos · Qwen Chat',
+      options: [
+        { id: 'qwen-image-edit', label: 'qwen-image-edit' },
+      ],
+    },
+  ],
+  videos: [
+    {
+      label: 'Modelo nativo · Qwen Chat',
+      options: [
+        { id: 'qwen-video', label: 'qwen-video' },
+      ],
+    },
+  ],
+};
+
+function playgroundSupportsModelSelection(key = state.currentPlayground) {
+  return ['chat', 'images', 'imageEdit', 'videos'].includes(key);
+}
+
+function safeParsePlaygroundDraft(key = state.currentPlayground) {
+  const draft = getPlaygroundDraft(key);
+  if (typeof draft !== 'string' || !draft.trim() || !draft.trim().startsWith('{')) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(draft);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function getPlaygroundModelValue(key = state.currentPlayground) {
+  if (!playgroundSupportsModelSelection(key)) {
+    return null;
+  }
+
+  const parsed = safeParsePlaygroundDraft(key);
+  if (!parsed) {
+    return 'auto';
+  }
+
+  return typeof parsed.model === 'string' && parsed.model.trim() ? parsed.model.trim() : 'auto';
+}
+
+function getPlaygroundModelGroups(key = state.currentPlayground) {
+  if (!playgroundSupportsModelSelection(key)) {
+    return [];
+  }
+
+  const models = Array.isArray(state.dashboard?.pool?.models) ? state.dashboard.pool.models : [];
+  const grouped = key === 'chat'
+    ? [
+        ...PLAYGROUND_MODEL_GROUPS.chat,
+        {
+          label: 'Premium · Tier 1',
+          options: models.filter((model) => !model.paidOnly && Number(model.tier) === 1).map((model) => ({ id: model.id, label: model.id })),
+        },
+        {
+          label: 'Balanceado · Tier 2',
+          options: models.filter((model) => !model.paidOnly && Number(model.tier) === 2).map((model) => ({ id: model.id, label: model.id })),
+        },
+        {
+          label: 'Rapido · Tier 3',
+          options: models.filter((model) => !model.paidOnly && Number(model.tier) === 3).map((model) => ({ id: model.id, label: model.id })),
+        },
+        {
+          label: 'Pago',
+          options: models.filter((model) => model.paidOnly).map((model) => ({ id: model.id, label: model.id })),
+        },
+      ]
+    : (PLAYGROUND_MODEL_GROUPS[key] || []);
+
+  const currentValue = getPlaygroundModelValue(key);
+  const knownIds = new Set(grouped.flatMap((group) => group.options.map((option) => option.id)));
+  if (currentValue && !knownIds.has(currentValue)) {
+    grouped.unshift({
+      label: 'Actual',
+      options: [{ id: currentValue, label: `${currentValue} (no disponible)` }],
+    });
+  }
+
+  return grouped.filter((group) => group.options.length > 0);
+}
+
+function setPlaygroundModelValue(modelId, key = state.currentPlayground) {
+  if (!playgroundSupportsModelSelection(key)) {
+    return;
+  }
+
+  const parsed = safeParsePlaygroundDraft(key) || safeParsePlaygroundDraftFromExample(key) || {};
+  parsed.model = modelId;
+  setPlaygroundDraft(key, JSON.stringify(parsed, null, 2));
+}
+
+function safeParsePlaygroundDraftFromExample(key) {
+  const example = getPlaygroundExample(key);
+  if (!example || typeof example.body !== 'string' || !example.body.trim().startsWith('{')) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(example.body);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function renderPlaygroundModelControl(key = state.currentPlayground) {
+  if (key === 'audio') {
+    const audioModel = state.playgroundAudioProvider === 'witai' ? 'speech' : 'whisper-large-v3';
+    return `<label>Modelo
+      <input value="${escapeHtml(audioModel)}" readonly />
+    </label>`;
+  }
+
+  if (!playgroundSupportsModelSelection(key)) {
+    return `<label>Modelo
+      <input value="N/A" readonly />
+    </label>`;
+  }
+
+  const modelValue = getPlaygroundModelValue(key) || 'auto';
+  const groups = getPlaygroundModelGroups(key);
+
+  return `<label>Modelo
+    <select data-action="playground-model" id="playground-model-select">
+      ${groups.map((group) => `<optgroup label="${escapeHtml(group.label)}">${group.options.map((option) => `<option value="${escapeHtml(option.id)}" ${modelValue === option.id ? 'selected' : ''}>${escapeHtml(option.label)}</option>`).join('')}</optgroup>`).join('')}
+    </select>
+  </label>`;
+}
+
 function getProviderRateLimitMap() {
   const rules = state.dashboard?.rateLimits?.providerRules || [];
   return new Map(rules.map((rule) => [rule.scopeId, rule]));
@@ -835,17 +1058,17 @@ function getPlaygroundExamples() {
       description: 'Generacion de imagenes lo mas compatible posible con OpenAI. El backend se resuelve por modelo y disponibilidad.',
       systemPrompt: 'Describe visualmente el resultado esperado y el estilo.',
       inputLabel: 'Prompt',
-      curl: `curl ${baseUrl}/v1/images/generations \\\n  -H "Authorization: Bearer YOUR_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '{\n    "prompt": "A warm dashboard illustration",\n    "model": "gpt-image-1"\n  }'`,
-      javascript: `const response = await fetch("${baseUrl}/v1/images/generations", {\n  method: "POST",\n  headers: {\n    "Authorization": "Bearer YOUR_API_KEY",\n    "Content-Type": "application/json"\n  },\n  body: JSON.stringify({\n    prompt: "A warm dashboard illustration",\n    model: "gpt-image-1"\n  })\n});\n\nconst data = await response.json();\nconsole.log(data);`,
-      body: `{\n  "prompt": "A warm dashboard illustration",\n  "model": "gpt-image-1"\n}`,
+      curl: `curl ${baseUrl}/v1/images/generations \\\n  -H "Authorization: Bearer YOUR_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '{\n    "prompt": "A warm dashboard illustration",\n    "model": "flux"\n  }'`,
+      javascript: `const response = await fetch("${baseUrl}/v1/images/generations", {\n  method: "POST",\n  headers: {\n    "Authorization": "Bearer YOUR_API_KEY",\n    "Content-Type": "application/json"\n  },\n  body: JSON.stringify({\n    prompt: "A warm dashboard illustration",\n    model: "flux"\n  })\n});\n\nconst data = await response.json();\nconsole.log(data);`,
+      body: `{\n  "prompt": "A warm dashboard illustration",\n  "model": "flux"\n}`,
       response: `{\n  "created": 1710000000,\n  "data": [\n    { "url": "data:image/jpeg;base64,/9j..." }\n  ]\n}`,
     },
     imageEdit: {
-      title: '/v1/images/edit',
+      title: '/v1/images/edits',
       description: 'Edicion de imagenes con contrato compatible con OpenAI usando URL remota, archivo local o base64.',
       systemPrompt: 'Indica claramente que partes de la imagen quieres preservar y que debe cambiar.',
       inputLabel: 'JSON body',
-      curl: `curl ${baseUrl}/v1/images/edit \
+      curl: `curl ${baseUrl}/v1/images/edits \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -853,7 +1076,7 @@ function getPlaygroundExamples() {
     "image": "https://download.samplelib.com/png/sample-hut-400x300.png",
     "response_format": "url"
   }'`,
-      javascript: `const response = await fetch("${baseUrl}/v1/images/edit", {
+      javascript: `const response = await fetch("${baseUrl}/v1/images/edits", {
   method: "POST",
   headers: {
     "Authorization": "Bearer YOUR_API_KEY",
@@ -890,7 +1113,7 @@ console.log(data);`,
   -H "Content-Type: application/json" \
   -d '{
     "prompt": "A cinematic drone shot over a futuristic city",
-    "model": "sora-2",
+    "model": "qwen-video",
     "size": "1280x720"
   }'`,
       javascript: `const response = await fetch("${baseUrl}/v1/videos", {
@@ -901,16 +1124,15 @@ console.log(data);`,
   },
   body: JSON.stringify({
     prompt: "A cinematic drone shot over a futuristic city",
-    model: "sora-2",
+    model: "qwen-video",
     size: "1280x720"
   })
 });
 
-const data = await response.json();
-console.log(data);`,
+const data = await response.json();`,
       body: `{
   "prompt": "A cinematic drone shot over a futuristic city",
-  "model": "sora-2",
+  "model": "qwen-video",
   "size": "1280x720"
 }`,
       response: `{
@@ -980,6 +1202,42 @@ function getPlaygroundModelLabel(key = state.currentPlayground) {
   }
 }
 
+function extractPlaygroundErrorPayload(payload, fallbackStatus) {
+  if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+    const error = payload.error && typeof payload.error === 'object' ? payload.error : null;
+    return {
+      message: typeof error?.message === 'string' && error.message.trim() ? error.message.trim() : `HTTP ${fallbackStatus}`,
+      type: typeof error?.type === 'string' ? error.type : null,
+      code: typeof error?.code === 'string' || typeof error?.code === 'number' ? String(error.code) : null,
+      payload,
+    };
+  }
+
+  return {
+    message: typeof payload === 'string' && payload.trim() ? payload.trim() : `HTTP ${fallbackStatus}`,
+    type: null,
+    code: null,
+    payload,
+  };
+}
+
+function formatPlaygroundFailure(details) {
+  const parts = [details.endpoint, `HTTP ${details.status}`, details.type, details.code, details.message]
+    .filter(Boolean);
+  return parts.join(' | ');
+}
+
+function formatPlaygroundConsolePayload(payload) {
+  if (typeof payload === 'string') {
+    return payload;
+  }
+  try {
+    return JSON.stringify(payload, null, 2);
+  } catch {
+    return String(payload);
+  }
+}
+
 function readFileAsDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -1005,6 +1263,19 @@ async function executePlaygroundRequest() {
   const example = getPlaygroundExample();
   const draft = getPlaygroundDraft();
   const startedAt = Date.now();
+  let requestPayload = null;
+  const selectedImageEditFile = state.currentPlayground === 'imageEdit'
+    ? (() => {
+      const input = document.querySelector('#playground-image-edit-file');
+      return input instanceof HTMLInputElement ? input.files?.[0] || null : null;
+    })()
+    : null;
+  const selectedAudioFile = state.currentPlayground === 'audio'
+    ? (() => {
+      const input = document.querySelector('#playground-audio-file');
+      return input instanceof HTMLInputElement ? input.files?.[0] || null : null;
+    })()
+    : null;
   state.playgroundBusy = true;
   state.playgroundResponse = {
     status: 'running',
@@ -1017,6 +1288,7 @@ async function executePlaygroundRequest() {
     let response;
     if (state.currentPlayground === 'chat') {
       const payload = JSON.parse(draft);
+      requestPayload = payload;
       response = await fetch('/v1/chat/completions', {
         method: 'POST',
         credentials: 'same-origin',
@@ -1025,6 +1297,7 @@ async function executePlaygroundRequest() {
       });
     } else if (state.currentPlayground === 'embeddings') {
       const payload = JSON.parse(draft);
+      requestPayload = payload;
       response = await fetch('/v1/embeddings', {
         method: 'POST',
         credentials: 'same-origin',
@@ -1033,6 +1306,7 @@ async function executePlaygroundRequest() {
       });
     } else if (state.currentPlayground === 'images') {
       const payload = JSON.parse(draft);
+      requestPayload = payload;
       response = await fetch('/v1/images/generations', {
         method: 'POST',
         credentials: 'same-origin',
@@ -1041,12 +1315,11 @@ async function executePlaygroundRequest() {
       });
     } else if (state.currentPlayground === 'imageEdit') {
       const payload = JSON.parse(draft);
-      const fileInput = document.querySelector('#playground-image-edit-file');
-      const file = fileInput instanceof HTMLInputElement ? fileInput.files?.[0] : null;
-      if (file) {
-        payload.image = await readFileAsDataUrl(file);
+      if (selectedImageEditFile) {
+        payload.image = await readFileAsDataUrl(selectedImageEditFile);
       }
-      response = await fetch('/v1/images/edit', {
+      requestPayload = payload;
+      response = await fetch('/v1/images/edits', {
         method: 'POST',
         credentials: 'same-origin',
         headers: buildPlaygroundHeaders(true),
@@ -1054,6 +1327,7 @@ async function executePlaygroundRequest() {
       });
     } else if (state.currentPlayground === 'videos') {
       const payload = JSON.parse(draft);
+      requestPayload = payload;
       response = await fetch('/v1/videos', {
         method: 'POST',
         credentials: 'same-origin',
@@ -1073,13 +1347,11 @@ async function executePlaygroundRequest() {
         headers: buildPlaygroundHeaders(false),
       });
     } else if (state.currentPlayground === 'audio') {
-      const fileInput = document.querySelector('#playground-audio-file');
-      const file = fileInput instanceof HTMLInputElement ? fileInput.files?.[0] : null;
-      if (!file) {
+      if (!selectedAudioFile) {
         throw new Error('Selecciona un archivo de audio para probar transcripciones.');
       }
       const form = new FormData();
-      form.append('file', file);
+      form.append('file', selectedAudioFile);
       form.append('provider', state.playgroundAudioProvider);
       if (state.playgroundAudioLanguage.trim()) {
         form.append('language', state.playgroundAudioLanguage.trim());
@@ -1098,7 +1370,7 @@ async function executePlaygroundRequest() {
     const payload = contentType.includes('application/json')
       ? await response.json()
       : await response.text();
-    const serialized = typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2);
+    const serialized = formatPlaygroundConsolePayload(payload);
 
     state.playgroundResponse = {
       status: response.ok ? response.status : `HTTP ${response.status}`,
@@ -1107,18 +1379,41 @@ async function executePlaygroundRequest() {
     };
 
     if (!response.ok) {
-      throw new Error(typeof payload === 'object' && payload?.error?.message ? payload.error.message : `HTTP ${response.status}`);
+      const parsedError = extractPlaygroundErrorPayload(payload, response.status);
+      const failureDetails = {
+        endpoint: example.title,
+        status: response.status,
+        requestId: response.headers.get('x-request-id') || null,
+        type: parsedError.type,
+        code: parsedError.code,
+        message: parsedError.message,
+        requestPayload,
+        responsePayload: parsedError.payload,
+      };
+      console.error('[Playground] Request failed', failureDetails);
+      throw Object.assign(new Error(formatPlaygroundFailure(failureDetails)), {
+        playgroundDetails: failureDetails,
+      });
     }
 
     if (state.mode === 'app') {
       await refreshDashboard();
     }
   } catch (error) {
+    const details = error?.playgroundDetails || null;
     state.playgroundResponse = {
-      status: 'error',
+      status: details ? `HTTP ${details.status}` : 'error',
       elapsedMs: Date.now() - startedAt,
-      data: error.message || 'No se pudo ejecutar la peticion.',
+      data: details ? JSON.stringify(details, null, 2) : (error.message || 'No se pudo ejecutar la peticion.'),
     };
+    if (!details) {
+      console.error('[Playground] Request crashed', {
+        endpoint: example.title,
+        message: error.message || 'No se pudo ejecutar la peticion.',
+        requestPayload,
+        error,
+      });
+    }
     throw error;
   } finally {
     state.playgroundBusy = false;
@@ -1138,6 +1433,7 @@ function flashMarkup() {
           <button class="ghost-button" data-action="dismiss-flash">Cerrar</button>
         </div>
         <p>${escapeHtml(state.flash.message)}</p>
+        ${state.flash.details ? `<div class="code-block">${escapeHtml(state.flash.details)}</div>` : ''}
       </div>`
     : '';
 
@@ -1530,7 +1826,6 @@ function renderPlayground() {
   const examples = getPlaygroundExamples();
   const active = examples[state.currentPlayground];
   const draft = getPlaygroundDraft();
-  const modelLabel = getPlaygroundModelLabel();
   const currentSnippet = state.currentPlaygroundTab === 'javascript' ? active.javascript : active.curl;
   const responseMarkup = state.playgroundResponse
     ? `
@@ -1577,9 +1872,7 @@ function renderPlayground() {
                 <option value="apiKey" ${state.playgroundAuthMode === 'apiKey' ? 'selected' : ''}>API key manual</option>
               </select>
             </label>
-            <label>Modelo
-              <input value="${escapeHtml(modelLabel)}" readonly />
-            </label>
+            ${renderPlaygroundModelControl()}
             <label>Modo
               <input value="OpenAI compatible" readonly />
             </label>
@@ -2622,6 +2915,108 @@ function renderSettingsModelTiers() {
   `;
 }
 
+function renderSettingsModelAliases() {
+  const aliases = state.dashboard.modelAliases || [];
+  const fallbackAliasCategories = [
+    { id: 'chat', name: 'Chat', targets: (state.dashboard.pool?.models || []).map((model) => model.id) },
+    { id: 'images', name: 'Generación de imágenes', targets: ['flux', 'sdxl', 'turbo', 'playground', 'illustrious', 'qwen-image', 'wan', 'imagegeneration', 'qwenimage'] },
+    { id: 'imageEdit', name: 'Edición de imágenes', targets: ['qwen-image-edit'] },
+    { id: 'videos', name: 'Videos', targets: ['qwen-video'] },
+  ];
+  const dashboardAliasCategories = Array.isArray(state.dashboard.modelAliasCategories) ? state.dashboard.modelAliasCategories : [];
+  const aliasCategories = dashboardAliasCategories.length > 0
+    ? dashboardAliasCategories.map((category) => ({
+        ...category,
+        targets: Array.isArray(category.targets) && category.targets.length > 0
+          ? category.targets
+          : (fallbackAliasCategories.find((fallback) => fallback.id === category.id)?.targets || []),
+      }))
+    : fallbackAliasCategories;
+  const selectedCategory = aliasCategories.some((category) => category.id === state.modelAliasCategory)
+    ? state.modelAliasCategory
+    : 'chat';
+  const selectedCategoryInfo = aliasCategories.find((category) => category.id === selectedCategory) || aliasCategories[0];
+  const categoryOptions = aliasCategories.map((category) => `<option value="${category.id}" ${category.id === selectedCategory ? 'selected' : ''}>${escapeHtml(category.name)}</option>`).join('');
+  const targetOptions = selectedCategoryInfo
+    ? selectedCategoryInfo.targets.map((target) => `<option value="${escapeHtml(target)}">${escapeHtml(target)}</option>`).join('')
+    : '';
+
+  const rows = aliases.map((alias) => `
+    <tr>
+      <td>
+        <div style="font-family: var(--font-mono); font-size: 0.85rem;">${escapeHtml(alias.alias)}</div>
+      </td>
+      <td>
+        <div style="font-family: var(--font-mono); font-size: 0.85rem;">${escapeHtml(alias.targetModel)}</div>
+      </td>
+      <td>
+        <span class="tag ${alias.category === 'chat' ? '' : alias.category === 'images' ? 'info' : alias.category === 'imageEdit' ? 'warning' : 'success'}">${alias.category === 'chat' ? 'Chat' : alias.category === 'images' ? 'Imágenes' : alias.category === 'imageEdit' ? 'Edición' : 'Videos'}</span>
+      </td>
+      <td>
+        <span class="tag ${alias.isActive ? 'success' : 'muted'}">${alias.isActive ? 'Activo' : 'Inactivo'}</span>
+      </td>
+      <td>
+        <button class="danger-button" type="button" data-action="delete-model-alias" data-alias="${escapeHtml(alias.alias)}" data-category="${escapeHtml(alias.category || 'chat')}" style="padding: 0.3rem 0.6rem; font-size: 0.78rem;">
+          Eliminar
+        </button>
+      </td>
+    </tr>
+  `).join('');
+
+  return `
+    <article class="panel">
+      <h3>Crear nuevo alias</h3>
+      <p class="muted">Mapea un alias externo hacia un modelo real del pool o un target multimedia válido. Ejemplo: alias "gpt-image-1" → target "flux".</p>
+      <form data-form="create-model-alias" style="margin-top: 1rem;">
+        <div class="form-grid" style="display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 0.75rem; align-items: end;">
+          <label>Alias (nombre externo)
+            <input type="text" name="alias" placeholder="gpt-4" required style="font-family: var(--font-mono);" />
+          </label>
+          <label>Categoría
+            <select name="category" data-action="model-alias-category" required>
+              ${categoryOptions}
+            </select>
+          </label>
+          <label>Modelo target
+            <select name="targetModel" required>
+              <option value="">Selecciona un target...</option>
+              ${targetOptions}
+            </select>
+          </label>
+          <button class="secondary-button" type="submit">Crear alias</button>
+        </div>
+        <p class="muted" style="margin-top: 0.5rem; font-size: 0.8rem;">
+          <strong>Chat:</strong> Debe existir en el pool. 
+          <strong>Imágenes/Edición/Videos:</strong> Targets válidos del proveedor (no necesitan estar en el pool).
+        </p>
+      </form>
+    </article>
+
+    <article class="panel" style="margin-top: 1.5rem;">
+      <h3>Alias activos</h3>
+      <p class="muted">
+        ${aliases.length === 0 ? 'No hay aliases configurados.' : `${aliases.length} alias${aliases.length !== 1 ? 's' : ''} activo${aliases.length !== 1 ? 's' : ''}.`}
+      </p>
+      ${aliases.length === 0 ? '' : `
+        <div class="table-wrap" style="margin-top: 1rem;">
+          <table>
+            <thead>
+              <tr>
+                <th>Alias</th>
+                <th>Target</th>
+                <th>Categoría</th>
+                <th>Estado</th>
+                <th>Acciones</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      `}
+    </article>
+  `;
+}
+
 function renderSettingsMultiPage() {
   const dashboard = state.dashboard;
   const isAdminUser = dashboard.auth.isAdmin;
@@ -3119,6 +3514,10 @@ function renderSettingsMultiPage() {
     pageContent = renderSettingsModelTiers();
   }
 
+  if (isAdminUser && state.settingsPage === 'model-aliases') {
+    pageContent = renderSettingsModelAliases();
+  }
+
   return `
     <section class="settings-shell">
       <aside class="settings-nav panel">
@@ -3278,7 +3677,8 @@ async function bootstrapFlow() {
         const preview = await apiRequest(`/api/invitations/${encodeURIComponent(authParams.invite)}`, { allow401: true });
         state.invitePreview = preview.invitation;
       } catch (error) {
-        setFlash(error.message || 'La invitacion ya no es valida.', 'error');
+        const flash = buildFlashFromError(error, 'La invitacion ya no es valida.');
+        setFlash(flash.message, 'error', flash.details);
         clearAuthParams();
         state.authMode = 'login';
       }
@@ -3629,6 +4029,32 @@ async function submitUpdateCustomProvider(form) {
   setFlash('Proveedor actualizado. Pool recargado.');
 }
 
+async function submitCreateModelAlias(form) {
+  const formData = new FormData(form);
+  const alias = String(formData.get('alias') || '').trim().toLowerCase();
+  const targetModel = String(formData.get('targetModel') || '').trim();
+  const category = String(formData.get('category') || '').trim() || 'chat';
+
+  if (!alias) {
+    throw new Error('El alias es requerido.');
+  }
+  if (!targetModel) {
+    throw new Error('El modelo target es requerido.');
+  }
+  if (!/^[a-zA-Z0-9\-_\.]+$/.test(alias)) {
+    throw new Error('El alias solo puede contener letras, numeros, guiones, puntos y guiones bajos.');
+  }
+
+  await apiRequest('/api/model-aliases', {
+    method: 'POST',
+    body: { alias, targetModel, category },
+  });
+  state.modelAliasCategory = category;
+  await refreshDashboard();
+  setFlash(`Alias "${alias}" → "${targetModel}" (${category}) creado.`);
+  form.reset();
+}
+
 async function submitUpdateProviderLimit(form) {
   const formData = new FormData(form);
   const provider = normalizeProviderId(formData.get('provider'));
@@ -3726,8 +4152,10 @@ async function handleSubmit(event) {
     if (formType === 'update-model-limit') await submitUpdateModelLimit(form);
     if (formType === 'create-custom-provider') await submitCreateCustomProvider(form);
     if (formType === 'edit-custom-provider') await submitUpdateCustomProvider(form);
+    if (formType === 'create-model-alias') await submitCreateModelAlias(form);
   } catch (error) {
-    setFlash(error.message || 'No se pudo completar la accion.', 'error');
+    const flash = buildFlashFromError(error, 'No se pudo completar la accion.');
+    setFlash(flash.message, 'error', flash.details);
   }
 }
 
@@ -3839,8 +4267,16 @@ async function handleClick(event) {
     }
 
     if (action === 'run-playground') {
-      await executePlaygroundRequest();
-      setFlash('Peticion ejecutada desde el playground.');
+      try {
+        await executePlaygroundRequest();
+        setFlash('Peticion ejecutada desde el playground.');
+      } catch (error) {
+        const details = error?.playgroundDetails || null;
+        const message = details
+          ? `${formatPlaygroundFailure(details)}. Revisa "Live response" y la consola del navegador.`
+          : (error.message || 'No se pudo ejecutar la peticion desde el playground.');
+        setFlash(message, 'error');
+      }
       return;
     }
 
@@ -4002,8 +4438,19 @@ async function handleClick(event) {
       setFlash(`Tier de ${modelId} restaurado a automatico.`);
       return;
     }
+
+    if (action === 'delete-model-alias') {
+      const alias = target.dataset.alias;
+      const category = target.dataset.category || 'chat';
+      if (!confirm(`¿Eliminar el alias "${alias}"?`)) return;
+      await apiRequest(`/api/model-aliases/${encodeURIComponent(alias)}?category=${encodeURIComponent(category)}`, { method: 'DELETE' });
+      await refreshDashboard();
+      setFlash(`Alias "${alias}" eliminado.`);
+      return;
+    }
   } catch (error) {
-    setFlash(error.message || 'No se pudo completar la accion.', 'error');
+    const flash = buildFlashFromError(error, 'No se pudo completar la accion.');
+    setFlash(flash.message, 'error', flash.details);
   }
 }
 
@@ -4020,6 +4467,22 @@ function handleInput(event) {
 
   if (action === 'playground-body' && target instanceof HTMLTextAreaElement) {
     setPlaygroundDraft(state.currentPlayground, target.value);
+    if (event.type === 'change') {
+      render();
+    }
+    return;
+  }
+
+  if (action === 'playground-model' && target instanceof HTMLSelectElement) {
+    setPlaygroundModelValue(target.value, state.currentPlayground);
+    state.playgroundResponse = null;
+    render();
+    return;
+  }
+
+  if (action === 'model-alias-category' && target instanceof HTMLSelectElement) {
+    state.modelAliasCategory = target.value || 'chat';
+    render();
     return;
   }
 
@@ -4035,6 +4498,7 @@ function handleInput(event) {
 
   if (action === 'playground-audio-provider' && target instanceof HTMLSelectElement) {
     state.playgroundAudioProvider = target.value;
+    render();
     return;
   }
 
@@ -4084,5 +4548,6 @@ app.addEventListener('change', handleInput);
 
 render();
 bootstrapFlow().catch((error) => {
-  setFlash(error.message || 'No se pudo iniciar el panel.', 'error');
+  const flash = buildFlashFromError(error, 'No se pudo iniciar el panel.');
+  setFlash(flash.message, 'error', flash.details);
 });

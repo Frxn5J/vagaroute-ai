@@ -7,6 +7,7 @@ import {
 } from '../core/usageLimits';
 import { ensureProviderLimitAvailable } from '../core/providerLimits';
 import { getProviderKeyCandidates, withProviderKey } from '../core/providerKeys';
+import { resolveModelAliasByCategory } from '../core/db';
 import {
   buildProviderError,
   errorResponse,
@@ -60,12 +61,26 @@ function isPollinationsImageModel(modelId: string): boolean {
     || modelId.includes('illustrious');
 }
 
+// Resolve model alias for multimedia before any provider logic
+function resolveMultimediaModel(model: unknown, category: 'images' | 'imageEdit' | 'videos'): string {
+  const requestedModel = normalizeRequestedModel(model);
+  if (!requestedModel) {
+    return requestedModel ?? '';
+  }
+  
+  // Try to resolve alias by category
+  const resolved = resolveModelAliasByCategory(requestedModel, category);
+  return resolved ?? requestedModel;
+}
+
 function resolveImageGenerationProvider(value: unknown, model: unknown): ImageGenerationProvider {
   if (value != null && value !== '') {
     return normalizeImageGenerationProvider(value);
   }
 
-  const modelId = normalizeRequestedModelId(model);
+  // Resolve alias first before deciding provider
+  const resolvedModel = resolveMultimediaModel(model, 'images');
+  const modelId = normalizeRequestedModelId(resolvedModel);
   if (!modelId || modelId === 'auto') {
     return hasQwenMediaKeysConfigured() ? 'qwenchat' : 'pollinations';
   }
@@ -80,8 +95,10 @@ function resolveImageGenerationProvider(value: unknown, model: unknown): ImageGe
 }
 
 function resolveQwenImageModel(model: unknown): string | null {
-  const requestedModel = normalizeRequestedModel(model);
-  const requestedModelId = normalizeRequestedModelId(model);
+  // First resolve any alias for images category
+  const resolvedModel = resolveMultimediaModel(model, 'images');
+  const requestedModel = normalizeRequestedModel(resolvedModel);
+  const requestedModelId = normalizeRequestedModelId(requestedModel);
 
   if (!requestedModel || requestedModelId === 'auto' || isOpenAiImageAlias(requestedModelId)) {
     return null;
@@ -96,13 +113,23 @@ function resolveQwenImageMetricModel(model: unknown): string {
 }
 
 function resolveQwenImageEditMetricModel(model: unknown): string {
-  const upstreamModel = resolveQwenImageModel(model);
-  return upstreamModel ?? 'qwen-image-edit';
+  // First resolve any alias for imageEdit category
+  const resolvedModel = resolveMultimediaModel(model, 'imageEdit');
+  const requestedModel = normalizeRequestedModel(resolvedModel);
+  const requestedModelId = normalizeRequestedModelId(requestedModel);
+
+  if (!requestedModel || requestedModelId === 'auto' || isOpenAiImageAlias(requestedModelId)) {
+    return 'qwen-image-edit';
+  }
+
+  return requestedModel;
 }
 
 function resolvePollinationsImageModel(model: unknown): string {
-  const requestedModel = normalizeRequestedModel(model);
-  const requestedModelId = normalizeRequestedModelId(model);
+  // First resolve any alias for images category
+  const resolvedModel = resolveMultimediaModel(model, 'images');
+  const requestedModel = normalizeRequestedModel(resolvedModel);
+  const requestedModelId = normalizeRequestedModelId(requestedModel);
 
   if (!requestedModel || requestedModelId === 'auto' || isOpenAiImageAlias(requestedModelId) || isQwenImageModel(requestedModelId)) {
     return 'flux';
@@ -112,8 +139,10 @@ function resolvePollinationsImageModel(model: unknown): string {
 }
 
 function resolveQwenVideoModel(model: unknown): string | null {
-  const requestedModel = normalizeRequestedModel(model);
-  const requestedModelId = normalizeRequestedModelId(model);
+  // First resolve any alias for videos category
+  const resolvedModel = resolveMultimediaModel(model, 'videos');
+  const requestedModel = normalizeRequestedModel(resolvedModel);
+  const requestedModelId = normalizeRequestedModelId(requestedModel);
 
   if (!requestedModel || requestedModelId === 'auto' || requestedModelId === 'sora2' || requestedModelId === 'sora2pro') {
     return null;

@@ -1,5 +1,5 @@
 import type { AuthContext } from '../middlewares/auth';
-import { getAppSettings } from '../core/db';
+import { getAppSettings, resolveModelAlias } from '../core/db';
 import { states, tryServices, trySpecificService } from '../core/pool';
 import { estimateChatUsage } from '../core/usageLimits';
 import {
@@ -59,14 +59,15 @@ export async function handleChat(
   const useAuto = !model || ['auto', 'img', 'tools'].includes(model);
   const forceTools = model === 'tools';
   const forceVision = model === 'img';
+  const resolvedModel = !useAuto ? (resolveModelAlias(model) ?? model) : model;
   const usageEstimate = estimateChatUsage(chatRequest);
   const cacheEligible = isChatCacheEligible(chatRequest, wantsStream);
   const cacheScopeKey = resolveCacheScopeKey(auth, req);
   const cacheKey = cacheEligible
     ? buildChatCacheKey({
         scopeKey: cacheScopeKey,
-        model: String(model || 'auto'),
-        body: { ...chatRequest, model: String(model || 'auto') },
+        model: String(resolvedModel || 'auto'),
+        body: { ...chatRequest, model: String(resolvedModel || 'auto') },
       })
     : null;
 
@@ -101,7 +102,7 @@ export async function handleChat(
   try {
     const { stream, serviceName } = useAuto
       ? await tryServices(chatRequest, id, forceTools, forceVision)
-      : await trySpecificService(model, chatRequest, id);
+      : await trySpecificService(resolvedModel, chatRequest, id);
 
     const meta = splitServiceName(serviceName);
 
@@ -153,11 +154,14 @@ export async function handleChat(
     const assistantMessage: Record<string, unknown> = { role: 'assistant', content: content || null };
     if (tool_calls.length) assistantMessage.tool_calls = tool_calls;
 
+    // Use the original model name (alias) if provided, otherwise use serviceName (real model)
+    const responseModel = model && !useAuto ? String(model) : serviceName;
+
     const responseBody = {
       id,
       object: 'chat.completion',
       created,
-      model: serviceName,
+      model: responseModel,
       choices: [{ index: 0, message: assistantMessage, finish_reason }],
       usage: {
         prompt_tokens: finalUsage.promptTokens,

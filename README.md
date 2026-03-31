@@ -43,6 +43,16 @@ Your App  →  VagaRoute AI Gateway  →  Groq / Gemini / OpenRouter / Mistral /
 - **Vision routing** — filters providers that support image inputs
 - **Automatic failover** — up to 10 retries across providers when one fails
 
+### 🔌 Custom Providers (Bring Your Own)
+- **OpenAI Compatible:** Connect to any remote provider (e.g., vLLM, Ollama, Together AI, DeepSeek) natively from the dashboard.
+- **Full Control:** Configure Custom Base URLs, API Keys, and Models.
+- **Granular Features:** Toggle Tool/Vision support per custom model explicitly.
+
+### 🎭 Model Aliases (Seamless Compatibility)
+- **Drop-in Replacements:** Map legacy/external model names (like `gpt-4o` or `claude-3-5-sonnet`) to any real model in your pool.
+- **Multimedia Support:** Aliases work seamlessly across Chat, Image Generation (`gpt-image-1`), and Video outputs (`sora-2`).
+- **Zero Client Changes:** Your client applications point to standard model names without knowing the underlying routing mechanism.
+
 <img width="1559" height="808" alt="imagen" src="https://github.com/user-attachments/assets/be037449-0af2-4ced-8b0a-3176d6dd59a7" />
 <img width="1289" height="581" alt="imagen" src="https://github.com/user-attachments/assets/42ccf756-766d-4cd8-9512-74cafe777d17" />
 <img width="1912" height="879" alt="imagen" src="https://github.com/user-attachments/assets/8b2aa5a9-250b-4c7f-9416-b6075f2839e4" />
@@ -52,6 +62,7 @@ Your App  →  VagaRoute AI Gateway  →  Groq / Gemini / OpenRouter / Mistral /
 ### 📦 Supported Providers
 | Provider | Free Tier | Chat | Tools | Vision | Images | Audio | Embeddings |
 |---|---|---|---|---|---|---|---|
+| **Custom Providers** | 🔌 Bring Your Own | ✅ | ✅ | ✅ | — | — | — |
 | **Groq** | ✅ | ✅ | ✅ | ✅ | — | ✅ Whisper | — |
 | **Cerebras** | ✅ | ✅ | ✅ | — | — | — | — |
 | **Gemini** | ✅ | ✅ | ✅ | ✅ | — | — | — |
@@ -269,6 +280,7 @@ POST /v1/chat/completions
 | `auto` | Best available free model (default) |
 | `tools` | Best available model with function-calling support |
 | `img` | Best available model with vision support |
+| Any mapped alias | e.g., `gpt-4o` or `claude-3-5-sonnet` (if configured) |
 | Any provider model | e.g., `groq/llama-3.3-70b-versatile` |
 
 **Response headers:**
@@ -314,7 +326,7 @@ Content-Type: application/json
 }
 ```
 
-`/v1/images/edit` is also accepted as an alias.
+`/v1/images/edit` remains available only as a compatibility alias, but the canonical OpenAI-style path is `/v1/images/edits`.
 
 ### Video Generation
 
@@ -378,7 +390,7 @@ GET /health
 
 ## 🖥️ Dashboard
 
-The built-in web dashboard is served at the root URL (`/`). It includes:
+The built-in web dashboard (fully localized with built-in i18n support, including Spanish) is served at the root URL (`/`). It includes:
 
 - **Pool status** — all loaded models with availability, cooldown timers, tool/vision support
 - **Metrics** — requests, tokens, cost (USD) per provider and model
@@ -392,6 +404,8 @@ The built-in web dashboard is served at the root URL (`/`). It includes:
 - **Service Key management** — add provider API keys, set priority, monitor cooldown state
 - **Rate limit rules** — configure RPM/RPD/TPM/TPD per provider or model
 - **Project management** — create projects, invite members, set budgets
+- **Custom Providers** — add, test, and manage any external OpenAI-compatible API from the UI
+- **Model Aliases** — map standard model names (e.g., `gpt-4o`) to actual backend resources
 
 ---
 

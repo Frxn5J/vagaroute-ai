@@ -14,6 +14,7 @@ import {
   listAllProjects,
   listApiKeysForUser,
   listInvitationTokens,
+  listModelAliases,
   listModelTierOverrides,
   listProjectsForUser,
   listRateLimitRules,
@@ -23,6 +24,7 @@ import {
 } from '../../core/db';
 import { listConfiguredProviderKeys } from '../../core/providerKeys';
 import { listCustomProviders } from '../../core/customProviders';
+import { getModelAliasCategories } from '../../core/modelAliases';
 import { reloadPool, states } from '../../core/pool';
 import { getResponseCacheStats } from '../../core/responseCache';
 import { normalizeProviderId } from '../../core/usageLimits';
@@ -183,6 +185,8 @@ function buildDashboardPayload(auth: AuthContext) {
     alerts: buildDashboardAlerts(auth, { tokens, userUsage, projectUsage, providerStats }),
     customProviders: isAdmin(auth) ? listCustomProviders() : [],
     modelTierOverrides: isAdmin(auth) ? listModelTierOverrides() : [],
+    modelAliases: isAdmin(auth) ? listModelAliases() : [],
+    modelAliasCategories: isAdmin(auth) ? getModelAliasCategories() : [],
     cache: getResponseCacheStats(isAdmin(auth) ? undefined : { userId: auth.user.id }),
     tokenization: { mode: 'provider-usage-with-fallback', exactForCompletedResponses: true },
   };

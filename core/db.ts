@@ -2986,3 +2986,147 @@ export function deleteModelTierOverride(modelId: string): boolean {
   ).run(modelId);
   return result.changes > 0;
 }
+
+// ─── Model Aliases (simple compatibility aliases) ───────────────────────────
+
+export type ModelAliasCategory = 'chat' | 'images' | 'imageEdit' | 'videos';
+
+export interface ModelAlias {
+  alias: string;
+  targetModel: string;
+  category: ModelAliasCategory;
+  isActive: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS model_aliases (
+    alias TEXT PRIMARY KEY,
+    target_model TEXT NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+`);
+
+// Migrate table to support categories and per-category uniqueness
+db.exec(`
+  CREATE TABLE IF NOT EXISTS model_aliases_v2 (
+    alias TEXT NOT NULL,
+    target_model TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT 'chat',
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (alias, category)
+  );
+`);
+
+const modelAliasesTableInfo = db.query('PRAGMA table_info(model_aliases)').all() as Array<{ name: string; pk: number }>;
+const modelAliasesNeedsCategoryMigration = !modelAliasesTableInfo.some((column) => column.name === 'category');
+const modelAliasesNeedsCompositePrimaryKey = modelAliasesTableInfo.filter((column) => column.pk > 0).length < 2;
+
+if (modelAliasesNeedsCategoryMigration || modelAliasesNeedsCompositePrimaryKey) {
+  db.exec(modelAliasesNeedsCategoryMigration
+    ? `
+      INSERT OR IGNORE INTO model_aliases_v2 (alias, target_model, category, is_active, created_at, updated_at)
+      SELECT alias, target_model, 'chat', is_active, created_at, updated_at
+      FROM model_aliases;
+    `
+    : `
+      INSERT OR IGNORE INTO model_aliases_v2 (alias, target_model, category, is_active, created_at, updated_at)
+      SELECT alias, target_model, category, is_active, created_at, updated_at
+      FROM model_aliases;
+    `);
+
+  db.exec('DROP TABLE IF EXISTS model_aliases;');
+  db.exec('ALTER TABLE model_aliases_v2 RENAME TO model_aliases;');
+} else {
+  db.exec('DROP TABLE IF EXISTS model_aliases_v2;');
+}
+
+export function listModelAliases(): ModelAlias[] {
+  return (db.query(
+    'SELECT alias, target_model, category, is_active, created_at, updated_at FROM model_aliases ORDER BY alias ASC',
+  ).all() as Array<{ alias: string; target_model: string; category: string; is_active: number; created_at: number; updated_at: number }>).map((row) => ({
+    alias: row.alias,
+    targetModel: row.target_model,
+    category: row.category as ModelAliasCategory,
+    isActive: row.is_active === 1,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }));
+}
+
+// Get alias map for a specific category (chat, images, imageEdit, videos)
+export function getModelAliasMapByCategory(category: ModelAliasCategory): Map<string, string> {
+  const rows = db.query(
+    'SELECT alias, target_model, is_active, category FROM model_aliases WHERE is_active = 1 AND category = $category',
+  ).all({ $category: category }) as Array<{ alias: string; target_model: string; category: string; is_active: number }>;
+  return new Map(rows.map((row) => [row.alias, row.target_model]));
+}
+
+// Legacy: Get all chat aliases (backward compatibility)
+export function getModelAliasMap(): Map<string, string> {
+  return getModelAliasMapByCategory('chat');
+}
+
+// Legacy: Resolve chat alias (backward compatibility)
+export function resolveModelAlias(modelName: string): string | null {
+  return resolveModelAliasByCategory(modelName, 'chat');
+}
+
+// Resolve alias by category
+export function resolveModelAliasByCategory(modelName: string, category: ModelAliasCategory): string | null {
+  const normalizedAlias = modelName.trim().toLowerCase();
+  const row = db.query(
+    'SELECT target_model FROM model_aliases WHERE alias = $alias AND is_active = 1 AND category = $category LIMIT 1',
+  ).get({ $alias: normalizedAlias, $category: category }) as { target_model: string } | null;
+  return row?.target_model ?? null;
+}
+
+export function upsertModelAlias(alias: string, targetModel: string, category: ModelAliasCategory = 'chat'): ModelAlias {
+  const now = Date.now();
+  // Ensure category is valid
+  const validCategory = ['chat', 'images', 'imageEdit', 'videos'].includes(category) ? category : 'chat';
+  
+  db.query(`
+    INSERT INTO model_aliases (alias, target_model, category, is_active, created_at, updated_at)
+    VALUES ($alias, $targetModel, $category, 1, $now, $now)
+    ON CONFLICT(alias, category) DO UPDATE SET
+      target_model = excluded.target_model,
+      category = excluded.category,
+      is_active = 1,
+      updated_at = excluded.updated_at
+  `).run({
+    $alias: alias.trim().toLowerCase(),
+    $targetModel: targetModel.trim(),
+    $category: validCategory,
+    $now: now,
+  });
+
+  const row = db.query(
+    'SELECT alias, target_model, category, is_active, created_at, updated_at FROM model_aliases WHERE alias = $alias AND category = $category',
+  ).get({ $alias: alias.trim().toLowerCase(), $category: validCategory }) as { alias: string; target_model: string; category: string; is_active: number; created_at: number; updated_at: number } | null;
+
+  if (!row) {
+    throw new Error('Failed to create/update model alias');
+  }
+
+  return {
+    alias: row.alias,
+    targetModel: row.target_model,
+    category: row.category as ModelAliasCategory,
+    isActive: row.is_active === 1,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export function deleteModelAlias(alias: string, category: ModelAliasCategory): boolean {
+  const result = db.query(
+    'DELETE FROM model_aliases WHERE alias = $alias AND category = $category',
+  ).run({ $alias: alias.trim().toLowerCase(), $category: category });
+  return result.changes > 0;
+}
