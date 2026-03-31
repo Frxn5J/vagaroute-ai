@@ -11,7 +11,33 @@ export interface MessageContentPartImage {
   };
 }
 
-export type MessageContentPart = MessageContentPartText | MessageContentPartImage;
+export interface MessageContentPartAudio {
+  type: 'audio_url';
+  audio_url: {
+    url: string;
+  };
+}
+
+export interface MessageContentPartVideo {
+  type: 'video_url';
+  video_url: {
+    url: string;
+  };
+}
+
+export interface MessageContentPartFile {
+  type: 'file_url';
+  file_url: {
+    url: string;
+  };
+}
+
+export type MessageContentPart =
+  | MessageContentPartText
+  | MessageContentPartImage
+  | MessageContentPartAudio
+  | MessageContentPartVideo
+  | MessageContentPartFile;
 
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system' | 'tool';
@@ -36,6 +62,8 @@ export interface ChatRequest {
   top_p?: number;
   // Soporte para JSON Output
   response_format?: { type: 'text' | 'json_object' };
+  enable_thinking?: boolean;
+  thinking_budget?: number;
   stream?: boolean;
 }
 
@@ -50,4 +78,4 @@ export interface AIService {
    *   data: [DONE]\n\n
    */
   chat: (request: ChatRequest, id: string) => Promise<AsyncIterable<string>>;
-}
+}

@@ -9,6 +9,7 @@ import { loadMistralServices } from '../services/mistral';
 import { loadNvidiaServices } from '../services/nvidia';
 import { loadOpenRouterServices } from '../services/openrouter';
 import { loadPuterServices } from '../services/puter';
+import { loadQwenChatServices } from '../services/qwenchat';
 import type { AIService, ChatRequest } from '../types';
 import { logger } from '../utils/logger';
 import {
@@ -138,6 +139,7 @@ export async function reloadPool(reason: string = 'manual'): Promise<void> {
     nvidiaServices,
     alibabaServices,
     puterServices,
+    qwenChatServices,
     customServices,
   ] = await Promise.all([
     loadGroqServices(),
@@ -150,6 +152,7 @@ export async function reloadPool(reason: string = 'manual'): Promise<void> {
     loadNvidiaServices(),
     loadAlibabaServices(),
     loadPuterServices(),
+    loadQwenChatServices(),
     loadCustomServices(),
   ]);
 
@@ -164,6 +167,7 @@ export async function reloadPool(reason: string = 'manual'): Promise<void> {
     ...cohereServices,
     ...nvidiaServices,
     ...puterServices,
+    ...qwenChatServices,
     ...customServices,
   ];
   const settings = getAppSettings();

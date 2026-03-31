@@ -20,6 +20,7 @@ export type ProviderName =
   | 'openrouter'
   | 'pollinations'
   | 'puter'
+  | 'qwenchat'
   | 'witai';
 
 export interface ProviderKeyCandidate {
@@ -64,6 +65,7 @@ const ENV_PROVIDER_KEYS: Record<ProviderName, { envName: string; metadata?: Reco
   openrouter: [{ envName: 'OPENROUTER_API_KEY' }],
   pollinations: [{ envName: 'POLLINATIONS_API_KEY' }],
   puter: [{ envName: 'puterAuthToken' }, { envName: 'PUTER_API_KEY' }],
+  qwenchat: [{ envName: 'QWEN_CHAT_API_KEY' }, { envName: 'QWEN_API_KEY' }],
   witai: [{ envName: 'WITAI_API_KEY' }],
 };
 

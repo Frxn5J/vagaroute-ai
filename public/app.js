@@ -12,6 +12,7 @@ const providerOptions = [
   'cerebras',
   'alibaba',
   'puter',
+  'qwenchat',
   'pollinations',
 ];
 
@@ -320,6 +321,7 @@ function formatProviderLabel(provider) {
     cerebras: 'Cerebras',
     alibaba: 'Alibaba',
     puter: 'Puter',
+    qwenchat: 'Qwen Chat',
     pollinations: 'Pollinations',
   };
   return labels[normalized] || provider;
@@ -830,13 +832,93 @@ function getPlaygroundExamples() {
     },
     images: {
       title: '/v1/images/generations',
-      description: 'Generacion de imagenes via Pollinations con soporte para API keys del servicio.',
+      description: 'Generacion de imagenes lo mas compatible posible con OpenAI. El backend se resuelve por modelo y disponibilidad.',
       systemPrompt: 'Describe visualmente el resultado esperado y el estilo.',
       inputLabel: 'Prompt',
-      curl: `curl ${baseUrl}/v1/images/generations \\\n  -H "Authorization: Bearer YOUR_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '{\n    "prompt": "A warm dashboard illustration",\n    "model": "flux"\n  }'`,
-      javascript: `const response = await fetch("${baseUrl}/v1/images/generations", {\n  method: "POST",\n  headers: {\n    "Authorization": "Bearer YOUR_API_KEY",\n    "Content-Type": "application/json"\n  },\n  body: JSON.stringify({\n    prompt: "A warm dashboard illustration",\n    model: "flux"\n  })\n});\n\nconst data = await response.json();\nconsole.log(data);`,
-      body: `{\n  "prompt": "A warm dashboard illustration",\n  "model": "flux"\n}`,
+      curl: `curl ${baseUrl}/v1/images/generations \\\n  -H "Authorization: Bearer YOUR_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '{\n    "prompt": "A warm dashboard illustration",\n    "model": "gpt-image-1"\n  }'`,
+      javascript: `const response = await fetch("${baseUrl}/v1/images/generations", {\n  method: "POST",\n  headers: {\n    "Authorization": "Bearer YOUR_API_KEY",\n    "Content-Type": "application/json"\n  },\n  body: JSON.stringify({\n    prompt: "A warm dashboard illustration",\n    model: "gpt-image-1"\n  })\n});\n\nconst data = await response.json();\nconsole.log(data);`,
+      body: `{\n  "prompt": "A warm dashboard illustration",\n  "model": "gpt-image-1"\n}`,
       response: `{\n  "created": 1710000000,\n  "data": [\n    { "url": "data:image/jpeg;base64,/9j..." }\n  ]\n}`,
+    },
+    imageEdit: {
+      title: '/v1/images/edit',
+      description: 'Edicion de imagenes con contrato compatible con OpenAI usando URL remota, archivo local o base64.',
+      systemPrompt: 'Indica claramente que partes de la imagen quieres preservar y que debe cambiar.',
+      inputLabel: 'JSON body',
+      curl: `curl ${baseUrl}/v1/images/edit \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "Add a neon skyline in the background",
+    "image": "https://download.samplelib.com/png/sample-hut-400x300.png",
+    "response_format": "url"
+  }'`,
+      javascript: `const response = await fetch("${baseUrl}/v1/images/edit", {
+  method: "POST",
+  headers: {
+    "Authorization": "Bearer YOUR_API_KEY",
+    "Content-Type": "application/json"
+  },
+  body: JSON.stringify({
+    prompt: "Add a neon skyline in the background",
+    image: "https://download.samplelib.com/png/sample-hut-400x300.png",
+    response_format: "url"
+  })
+});
+
+const data = await response.json();
+console.log(data);`,
+      body: `{
+  "prompt": "Add a neon skyline in the background",
+  "image": "https://download.samplelib.com/png/sample-hut-400x300.png",
+  "response_format": "url"
+}`,
+      response: `{
+  "created": 1710000000,
+  "data": [
+    { "url": "https://cdn.example.com/edited-image.png" }
+  ]
+}`,
+    },
+    videos: {
+      title: '/v1/videos',
+      description: 'Generacion de video desde el playground con el alias mas cercano al contrato de OpenAI disponible en este gateway.',
+      systemPrompt: 'Describe escena, encuadre, movimiento de camara y duracion esperada.',
+      inputLabel: 'JSON body',
+      curl: `curl ${baseUrl}/v1/videos \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "A cinematic drone shot over a futuristic city",
+    "model": "sora-2",
+    "size": "1280x720"
+  }'`,
+      javascript: `const response = await fetch("${baseUrl}/v1/videos", {
+  method: "POST",
+  headers: {
+    "Authorization": "Bearer YOUR_API_KEY",
+    "Content-Type": "application/json"
+  },
+  body: JSON.stringify({
+    prompt: "A cinematic drone shot over a futuristic city",
+    model: "sora-2",
+    size: "1280x720"
+  })
+});
+
+const data = await response.json();
+console.log(data);`,
+      body: `{
+  "prompt": "A cinematic drone shot over a futuristic city",
+  "model": "sora-2",
+  "size": "1280x720"
+}`,
+      response: `{
+  "created": 1710000000,
+  "data": [
+    { "url": "https://cdn.example.com/generated-video.mp4" }
+  ]
+}`,
     },
     audio: {
       title: '/v1/audio/transcriptions',
@@ -875,6 +957,36 @@ function getPlaygroundDraft(key = state.currentPlayground) {
 
 function setPlaygroundDraft(key, value) {
   state.playgroundBodies[key] = value;
+}
+
+function getPlaygroundModelLabel(key = state.currentPlayground) {
+  if (key === 'audio') {
+    return state.playgroundAudioProvider === 'witai' ? 'speech' : 'whisper-large-v3';
+  }
+  if (key === 'models' || key === 'metrics') {
+    return 'N/A';
+  }
+
+  const draft = getPlaygroundDraft(key);
+  if (typeof draft !== 'string' || !draft.trim() || !draft.trim().startsWith('{')) {
+    return 'N/A';
+  }
+
+  try {
+    const parsed = JSON.parse(draft);
+    return typeof parsed?.model === 'string' && parsed.model.trim() ? parsed.model.trim() : 'Auto';
+  } catch {
+    return 'JSON invalido';
+  }
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+    reader.onerror = () => reject(reader.error || new Error('No se pudo leer el archivo seleccionado.'));
+    reader.readAsDataURL(file);
+  });
 }
 
 function buildPlaygroundHeaders(isJson = true) {
@@ -922,6 +1034,27 @@ async function executePlaygroundRequest() {
     } else if (state.currentPlayground === 'images') {
       const payload = JSON.parse(draft);
       response = await fetch('/v1/images/generations', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: buildPlaygroundHeaders(true),
+        body: JSON.stringify(payload),
+      });
+    } else if (state.currentPlayground === 'imageEdit') {
+      const payload = JSON.parse(draft);
+      const fileInput = document.querySelector('#playground-image-edit-file');
+      const file = fileInput instanceof HTMLInputElement ? fileInput.files?.[0] : null;
+      if (file) {
+        payload.image = await readFileAsDataUrl(file);
+      }
+      response = await fetch('/v1/images/edit', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: buildPlaygroundHeaders(true),
+        body: JSON.stringify(payload),
+      });
+    } else if (state.currentPlayground === 'videos') {
+      const payload = JSON.parse(draft);
+      response = await fetch('/v1/videos', {
         method: 'POST',
         credentials: 'same-origin',
         headers: buildPlaygroundHeaders(true),
@@ -1397,6 +1530,7 @@ function renderPlayground() {
   const examples = getPlaygroundExamples();
   const active = examples[state.currentPlayground];
   const draft = getPlaygroundDraft();
+  const modelLabel = getPlaygroundModelLabel();
   const currentSnippet = state.currentPlaygroundTab === 'javascript' ? active.javascript : active.curl;
   const responseMarkup = state.playgroundResponse
     ? `
@@ -1444,7 +1578,7 @@ function renderPlayground() {
               </select>
             </label>
             <label>Modelo
-              <input value="${escapeHtml(state.chatModel || 'auto')}" readonly />
+              <input value="${escapeHtml(modelLabel)}" readonly />
             </label>
             <label>Modo
               <input value="OpenAI compatible" readonly />
@@ -1478,6 +1612,14 @@ function renderPlayground() {
               </label>
               <label>${escapeHtml(active.inputLabel)}
                 <textarea readonly>${escapeHtml(active.body)}</textarea>
+              </label>
+            ` : state.currentPlayground === 'imageEdit' ? `
+              <label>Imagen local opcional
+                <input id="playground-image-edit-file" type="file" accept="image/*" />
+              </label>
+              <p class="muted" style="margin-top: -0.35rem;">Si eliges un archivo, el playground lo convierte a data URL y reemplaza el campo <code>image</code> del JSON al ejecutar.</p>
+              <label>${escapeHtml(active.inputLabel)}
+                <textarea id="playground-body" data-action="playground-body">${escapeHtml(draft)}</textarea>
               </label>
             ` : `
               <label>${escapeHtml(active.inputLabel)}

@@ -61,6 +61,7 @@ Your App  →  VagaRoute AI Gateway  →  Groq / Gemini / OpenRouter / Mistral /
 | **Cohere** | ✅ | ✅ | ✅ | — | — | — | ✅ multilingual |
 | **NVIDIA NIM** | ✅ | ✅ | ✅ | — | — | — | — |
 | **Alibaba** | ✅ | ✅ | ✅ | — | — | — | — |
+| **Qwen Chat** | ✅ | ✅ | ✅ select models | ✅ | ✅ | — | — |
 | **Puter.js** | ✅ (100% free) | ✅ | — | — | — | — | — |
 | **Pollinations** | ✅ | — | — | — | ✅ | — | — |
 | **Wit.ai** | ✅ | — | — | — | — | ✅ Speech | — |
@@ -293,11 +294,42 @@ Content-Type: application/json
 
 {
   "prompt": "A futuristic city at night",
-  "model": "flux",
+  "model": "gpt-image-1",
   "n": 1,
   "size": "1024x1024"
 }
 ```
+
+`/v1/images` is also accepted as an alias. The optional `provider` field remains available as a gateway-specific override, but OpenAI-style requests work without it.
+
+### Image Editing
+
+```bash
+POST /v1/images/edits
+Content-Type: application/json
+
+{
+  "prompt": "Add a neon skyline in the background",
+  "image": "https://download.samplelib.com/png/sample-hut-400x300.png"
+}
+```
+
+`/v1/images/edit` is also accepted as an alias.
+
+### Video Generation
+
+```bash
+POST /v1/videos
+Content-Type: application/json
+
+{
+  "prompt": "A cinematic drone shot over a futuristic city",
+  "model": "sora-2",
+  "size": "1280x720"
+}
+```
+
+`/v1/videos/generations` remains available as a legacy alias.
 
 ### Audio Transcription
 
@@ -434,7 +466,7 @@ bun-ai-api/
 | **Multi-tenancy** | ✅ Projects + budgets | ✅ Teams + budgets | ✅ Orgs + virtual keys | ✅ Workspaces | ✅ Organizations |
 | **Per-user budgets & quotas** | ✅ USD limit + request cap per user | ✅ | ❌ | ✅ | ❌ |
 | **Dashboard** | ✅ Built-in, role-scoped (admin/user) | ✅ Requires PG | ✅ Built-in | ✅ Built-in | ✅ Built-in |
-| **Image generation** | ✅ Pollinations (free, native) | 🟡 Proxy only | 🟡 Proxy only | 🟡 Proxy only | 🟡 Proxy only |
+| **Image generation** | ✅ Pollinations + Qwen | 🟡 Proxy only | 🟡 Proxy only | 🟡 Proxy only | 🟡 Proxy only |
 | **Audio transcription** | ✅ Groq + Wit.ai (native) | 🟡 Proxy only | 🟡 Proxy only | 🟡 Proxy only | 🟡 Proxy only |
 | **Embeddings** | ✅ Mistral + Cohere (native) | 🟡 Proxy only | 🟡 Proxy only | 🟡 Proxy only | 🟡 Proxy only |
 | **Provider count** | ~11 built-in + unlimited custom | 100+ built-in | 20+ built-in | 1,600+ models | 20+ built-in |
@@ -475,10 +507,10 @@ bun-ai-api/
 
 ## 🤝 Acknowledgements
 
-### Pollinations.ai
+### Pollinations.ai + Qwen
 
 
-VagaRoute AI uses **[Pollinations.ai](https://pollinations.ai)** for free image generation via the `/v1/images/generations` endpoint.
+VagaRoute AI uses **[Pollinations.ai](https://pollinations.ai)** for free image generation fallbacks and can route image/video requests through **Qwen** automatically based on the requested model, with `provider` kept only as an optional gateway-specific override.
 
 > See also: [Pollinations Frontend README](https://github.com/pollinations/pollinations/tree/main/image.pollinations.ai)
 
