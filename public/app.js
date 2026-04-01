@@ -4423,8 +4423,7 @@ async function handleClick(event) {
       const tier = Number(target.dataset.tier);
       await apiRequest('/api/model-tiers', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ modelId, tier }),
+        body: { modelId, tier },
       });
       await refreshDashboard();
       setFlash(`Tier ${tier} aplicado a ${modelId}. Pool recargado.`);
