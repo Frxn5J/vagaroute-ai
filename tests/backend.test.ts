@@ -1004,16 +1004,18 @@ describe('custom providers', () => {
         protocol: 'gemini',
         baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
         apiKey: 'AIza-test',
-        models: [{ id: 'gemini-2.5-pro', supportsTools: true, supportsVision: true }],
+        models: [{ id: 'gemini-2.5-pro', supportsTools: true, supportsVision: true, inImagePool: true, inVideoPool: false }],
       },
     });
 
     expect(createResponse.status).toBe(201);
     const createdPayload = await createResponse.json() as {
-      customProvider: { id: string; protocol: string; models: Array<{ id: string }> };
+      customProvider: { id: string; protocol: string; models: Array<{ id: string; inImagePool: boolean; inVideoPool: boolean }> };
     };
     expect(createdPayload.customProvider.protocol).toBe('gemini');
     expect(createdPayload.customProvider.models[0]?.id).toBe('gemini-2.5-pro');
+    expect(createdPayload.customProvider.models[0]?.inImagePool).toBe(true);
+    expect(createdPayload.customProvider.models[0]?.inVideoPool).toBe(false);
 
     const updateResponse = await request(`/api/custom-providers/${createdPayload.customProvider.id}`, {
       method: 'PATCH',
@@ -1023,17 +1025,19 @@ describe('custom providers', () => {
       json: {
         protocol: 'anthropic',
         baseUrl: 'https://api.anthropic.com/v1',
-        models: [{ id: 'claude-3-7-sonnet-latest', supportsTools: true, supportsVision: true }],
+        models: [{ id: 'claude-3-7-sonnet-latest', supportsTools: true, supportsVision: true, inImagePool: false, inVideoPool: true }],
       },
     });
 
     expect(updateResponse.status).toBe(200);
 
     const dashboard = await getDashboard(admin.cookie) as {
-      customProviders?: Array<{ protocol: string; models: Array<{ id: string }> }>;
+      customProviders?: Array<{ protocol: string; models: Array<{ id: string; inImagePool: boolean; inVideoPool: boolean }> }>;
     };
     expect(dashboard.customProviders?.[0]?.protocol).toBe('anthropic');
     expect(dashboard.customProviders?.[0]?.models[0]?.id).toBe('claude-3-7-sonnet-latest');
+    expect(dashboard.customProviders?.[0]?.models[0]?.inImagePool).toBe(false);
+    expect(dashboard.customProviders?.[0]?.models[0]?.inVideoPool).toBe(true);
   });
 });
 

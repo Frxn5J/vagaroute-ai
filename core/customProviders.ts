@@ -42,6 +42,34 @@ export interface CustomModelConfig {
   id: string;
   supportsTools: boolean;
   supportsVision: boolean;
+  inImagePool: boolean;
+  inVideoPool: boolean;
+}
+
+export interface CustomProviderMediaModel {
+  providerId: string;
+  providerName: string;
+  providerSlug: string;
+  protocol: CustomProviderProtocol;
+  baseUrl: string;
+  hasApiKey: boolean;
+  model: CustomModelConfig;
+}
+
+function normalizeCustomModelConfig(value: unknown): CustomModelConfig | null {
+  const id = getModelId(value);
+  if (!id) {
+    return null;
+  }
+
+  const record = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+  return {
+    id,
+    supportsTools: record.supportsTools === true,
+    supportsVision: record.supportsVision === true,
+    inImagePool: record.inImagePool === true,
+    inVideoPool: record.inVideoPool === true,
+  };
 }
 
 interface CustomProviderRow {
@@ -136,6 +164,13 @@ function getDiscoveryErrorMessage(status: number, payload: unknown): string {
 }
 
 function toRecord(row: CustomProviderRow): CustomProviderRecord {
+  const rawModels = JSON.parse(row.models) as unknown;
+  const parsedModels = Array.isArray(rawModels)
+    ? rawModels
+        .map(normalizeCustomModelConfig)
+        .filter((model): model is CustomModelConfig => Boolean(model))
+    : [];
+
   return {
     id: row.id,
     name: row.name,
@@ -143,7 +178,7 @@ function toRecord(row: CustomProviderRow): CustomProviderRecord {
     protocol: normalizeCustomProviderProtocol(row.protocol),
     baseUrl: row.base_url,
     hasApiKey: row.api_key_encrypted !== null,
-    models: JSON.parse(row.models) as CustomModelConfig[],
+    models: parsedModels,
     isActive: row.is_active === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -279,6 +314,8 @@ export async function discoverCustomProviderModels(input: {
       id,
       supportsTools: false,
       supportsVision: false,
+      inImagePool: false,
+      inVideoPool: false,
     }));
 
   if (models.length === 0) {
@@ -381,4 +418,21 @@ export function updateCustomProvider(
 export function deleteCustomProvider(id: string): boolean {
   const result = deleteProvider.run({ $id: id });
   return result.changes > 0;
+}
+
+export function listActiveCustomMediaModels(kind: 'images' | 'videos'): CustomProviderMediaModel[] {
+  const key = kind === 'images' ? 'inImagePool' : 'inVideoPool';
+  return listActiveCustomProviders().flatMap((provider) =>
+    provider.models
+      .filter((model) => model[key])
+      .map((model) => ({
+        providerId: provider.id,
+        providerName: provider.name,
+        providerSlug: provider.slug,
+        protocol: provider.protocol,
+        baseUrl: provider.baseUrl,
+        hasApiKey: provider.hasApiKey,
+        model,
+      })),
+  );
 }

@@ -48,7 +48,13 @@ export async function handleCustomProviders(
       }
 
       const models: CustomModelConfig[] = body.models
-        .map((m) => ({ id: String(m.id ?? '').trim(), supportsTools: m.supportsTools === true, supportsVision: m.supportsVision === true }))
+        .map((m) => ({
+          id: String(m.id ?? '').trim(),
+          supportsTools: m.supportsTools === true,
+          supportsVision: m.supportsVision === true,
+          inImagePool: m.inImagePool === true,
+          inVideoPool: m.inVideoPool === true,
+        }))
         .filter((m) => m.id);
 
       if (models.length === 0) {
@@ -113,7 +119,13 @@ export async function handleCustomProviders(
 
       const models: CustomModelConfig[] | undefined = Array.isArray(body.models)
         ? body.models
-            .map((m) => ({ id: String(m.id ?? '').trim(), supportsTools: m.supportsTools === true, supportsVision: m.supportsVision === true }))
+            .map((m) => ({
+              id: String(m.id ?? '').trim(),
+              supportsTools: m.supportsTools === true,
+              supportsVision: m.supportsVision === true,
+              inImagePool: m.inImagePool === true,
+              inVideoPool: m.inVideoPool === true,
+            }))
             .filter((m) => m.id)
         : undefined;
 

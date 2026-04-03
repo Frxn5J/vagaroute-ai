@@ -46,7 +46,7 @@ Your App  →  VagaRoute AI Gateway  →  Groq / Gemini / OpenRouter / Mistral /
 ### 🔌 Custom Providers (Bring Your Own)
 - **Multi-Protocol:** Connect OpenAI-compatible APIs plus Gemini API or Anthropic Messages endpoints directly from the dashboard.
 - **Full Control:** Configure Custom Base URLs, API Keys, and Models.
-- **Granular Features:** Toggle Tool/Vision support per custom model explicitly.
+- **Granular Features:** Toggle Tool/Vision support and decide per model if it joins the image or video generation pools.
 
 ### 🎭 Model Aliases (Seamless Compatibility)
 - **Drop-in Replacements:** Map legacy/external model names (like `gpt-4o` or `claude-3-5-sonnet`) to any real model in your pool.

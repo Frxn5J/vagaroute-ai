@@ -2688,6 +2688,8 @@ function mergeDiscoveredCustomProviderModels(existingModels, discoveredModels) {
       id,
       supportsTools: Boolean(model?.supportsTools),
       supportsVision: Boolean(model?.supportsVision),
+      inImagePool: Boolean(model?.inImagePool),
+      inVideoPool: Boolean(model?.inVideoPool),
     });
     existingMap.delete(id);
   }
@@ -2760,6 +2762,28 @@ function renderModelsBuilder(models, scope, protocol = 'openai') {
           ${model.supportsVision ? 'checked' : ''}
         />
         Vision
+      </label>
+      <label class="cp-check">
+        <input
+          type="checkbox"
+          data-action="cp-model-field"
+          data-scope="${escapeHtml(scope)}"
+          data-index="${index}"
+          data-field="inImagePool"
+          ${model.inImagePool ? 'checked' : ''}
+        />
+        Img pool
+      </label>
+      <label class="cp-check">
+        <input
+          type="checkbox"
+          data-action="cp-model-field"
+          data-scope="${escapeHtml(scope)}"
+          data-index="${index}"
+          data-field="inVideoPool"
+          ${model.inVideoPool ? 'checked' : ''}
+        />
+        Video pool
       </label>
       <button
         class="ghost-button"
@@ -2936,6 +2960,8 @@ function renderSettingsCustomProviders() {
                         ${escapeHtml(model.id)}
                         ${model.supportsTools ? '<span title="Tools">⚙</span>' : ''}
                         ${model.supportsVision ? '<span title="Vision">👁</span>' : ''}
+                        ${model.inImagePool ? '<span title="Imagenes">🖼</span>' : ''}
+                        ${model.inVideoPool ? '<span title="Videos">🎬</span>' : ''}
                       </span>
                     `).join('')}
                   </div>
@@ -4110,11 +4136,13 @@ async function submitCreateCustomProvider(form) {
       protocol: String(formData.get('protocol') || state.cpDraft.protocol || 'openai').trim() || 'openai',
       baseUrl: String(formData.get('baseUrl') || '').trim(),
       apiKey: String(formData.get('apiKey') || '').trim() || null,
-      models: models.map((m) => ({
-        id: m.id.trim(),
-        supportsTools: Boolean(m.supportsTools),
-        supportsVision: Boolean(m.supportsVision),
-      })),
+        models: models.map((m) => ({
+          id: m.id.trim(),
+          supportsTools: Boolean(m.supportsTools),
+          supportsVision: Boolean(m.supportsVision),
+          inImagePool: Boolean(m.inImagePool),
+          inVideoPool: Boolean(m.inVideoPool),
+        })),
     },
   });
   state.cpDraft = createEmptyCustomProviderDraft();
@@ -4142,6 +4170,8 @@ async function submitUpdateCustomProvider(form) {
       id: m.id.trim(),
       supportsTools: Boolean(m.supportsTools),
       supportsVision: Boolean(m.supportsVision),
+      inImagePool: Boolean(m.inImagePool),
+      inVideoPool: Boolean(m.inVideoPool),
     })),
   };
   if (newApiKey) {
@@ -4560,7 +4590,7 @@ async function handleClick(event) {
       const scope = target.dataset.scope;
       const models = scope === 'edit' ? state.cpEditing?.models : state.cpDraft.models;
       if (models) {
-        models.push({ id: '', supportsTools: false, supportsVision: false });
+        models.push({ id: '', supportsTools: false, supportsVision: false, inImagePool: false, inVideoPool: false });
         render();
       }
       return;
@@ -4591,7 +4621,7 @@ async function handleClick(event) {
           baseUrl: provider.baseUrl,
           hasApiKey: provider.hasApiKey,
           newApiKey: '',
-          models: provider.models.map((m) => ({ ...m })),
+          models: provider.models.map((m) => ({ ...m, inImagePool: Boolean(m.inImagePool), inVideoPool: Boolean(m.inVideoPool) })),
         };
         render();
       }
@@ -4785,6 +4815,12 @@ function handleInput(event) {
     }
     if (field === 'supportsVision' && target instanceof HTMLInputElement) {
       models[index].supportsVision = target.checked;
+    }
+    if (field === 'inImagePool' && target instanceof HTMLInputElement) {
+      models[index].inImagePool = target.checked;
+    }
+    if (field === 'inVideoPool' && target instanceof HTMLInputElement) {
+      models[index].inVideoPool = target.checked;
     }
     return;
   }
