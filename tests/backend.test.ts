@@ -64,6 +64,7 @@ function resetDatabase(): void {
     DELETE FROM project_members;
     DELETE FROM projects;
     DELETE FROM users;
+    DELETE FROM custom_providers;
     DELETE FROM rate_limit_rules;
     DELETE FROM provider_stats;
     DELETE FROM model_stats;
@@ -986,6 +987,53 @@ describe('metrics visibility', () => {
     expect(userMetricsPayload.provider_metrics[0]?.totalRequests).toBe(1);
     expect(userMetricsPayload.model_metrics).toHaveLength(1);
     expect(userMetricsPayload.model_metrics[0]?.model).toBe('alpha');
+  });
+});
+
+describe('custom providers', () => {
+  test('persists protocol metadata for gemini and anthropic custom providers', async () => {
+    const admin = await bootstrapAdmin();
+
+    const createResponse = await request('/api/custom-providers', {
+      method: 'POST',
+      headers: {
+        Cookie: admin.cookie,
+      },
+      json: {
+        name: 'Gemini Sidecar',
+        protocol: 'gemini',
+        baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+        apiKey: 'AIza-test',
+        models: [{ id: 'gemini-2.5-pro', supportsTools: true, supportsVision: true }],
+      },
+    });
+
+    expect(createResponse.status).toBe(201);
+    const createdPayload = await createResponse.json() as {
+      customProvider: { id: string; protocol: string; models: Array<{ id: string }> };
+    };
+    expect(createdPayload.customProvider.protocol).toBe('gemini');
+    expect(createdPayload.customProvider.models[0]?.id).toBe('gemini-2.5-pro');
+
+    const updateResponse = await request(`/api/custom-providers/${createdPayload.customProvider.id}`, {
+      method: 'PATCH',
+      headers: {
+        Cookie: admin.cookie,
+      },
+      json: {
+        protocol: 'anthropic',
+        baseUrl: 'https://api.anthropic.com/v1',
+        models: [{ id: 'claude-3-7-sonnet-latest', supportsTools: true, supportsVision: true }],
+      },
+    });
+
+    expect(updateResponse.status).toBe(200);
+
+    const dashboard = await getDashboard(admin.cookie) as {
+      customProviders?: Array<{ protocol: string; models: Array<{ id: string }> }>;
+    };
+    expect(dashboard.customProviders?.[0]?.protocol).toBe('anthropic');
+    expect(dashboard.customProviders?.[0]?.models[0]?.id).toBe('claude-3-7-sonnet-latest');
   });
 });
 

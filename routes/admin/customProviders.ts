@@ -7,6 +7,7 @@ import {
   listCustomProviders,
   updateCustomProvider,
   type CustomModelConfig,
+  type CustomProviderProtocol,
 } from '../../core/customProviders';
 import { reloadPool } from '../../core/pool';
 import { randomToken } from '../../utils/crypto';
@@ -34,6 +35,7 @@ export async function handleCustomProviders(
     try {
       const body = await readJsonBody<{
         name: string;
+        protocol?: CustomProviderProtocol;
         baseUrl: string;
         apiKey?: string | null;
         models: CustomModelConfig[];
@@ -56,6 +58,7 @@ export async function handleCustomProviders(
       const record = createCustomProvider({
         id: `cp_${randomToken(10)}`,
         name: body.name,
+        protocol: body.protocol,
         baseUrl: body.baseUrl,
         apiKey: body.apiKey ?? null,
         models,
@@ -75,12 +78,14 @@ export async function handleCustomProviders(
     try {
       const body = await readJsonBody<{
         providerId?: string;
+        protocol?: CustomProviderProtocol;
         baseUrl?: string;
         apiKey?: string | null;
       }>(req);
 
       const models = await discoverCustomProviderModels({
         providerId: body.providerId,
+        protocol: body.protocol,
         baseUrl: body.baseUrl,
         apiKey: body.apiKey,
       });
@@ -99,6 +104,7 @@ export async function handleCustomProviders(
     try {
       const body = await readJsonBody<{
         name?: string;
+        protocol?: CustomProviderProtocol;
         baseUrl?: string;
         apiKey?: string | null;
         models?: CustomModelConfig[];
@@ -113,6 +119,7 @@ export async function handleCustomProviders(
 
       const updated = updateCustomProvider(customProviderMatch[1] ?? '', {
         name: body.name,
+        protocol: body.protocol,
         baseUrl: body.baseUrl,
         apiKey: body.apiKey,
         models,

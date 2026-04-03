@@ -6,6 +6,7 @@ db.exec(`
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     slug TEXT NOT NULL UNIQUE,
+    protocol TEXT NOT NULL DEFAULT 'openai',
     base_url TEXT NOT NULL,
     api_key_encrypted TEXT,
     api_key_iv TEXT,
@@ -20,6 +21,23 @@ db.exec(`
     ON custom_providers(is_active);
 `);
 
+const customProvidersColumns = new Set(
+  (db.query('PRAGMA table_info(custom_providers)').all() as Array<{ name: string }>).map((row) => row.name),
+);
+if (!customProvidersColumns.has('protocol')) {
+  db.exec("ALTER TABLE custom_providers ADD COLUMN protocol TEXT NOT NULL DEFAULT 'openai';");
+}
+
+export type CustomProviderProtocol = 'openai' | 'gemini' | 'anthropic';
+
+function normalizeCustomProviderProtocol(value: unknown): CustomProviderProtocol {
+  const normalized = String(value ?? 'openai').trim().toLowerCase();
+  if (normalized === 'gemini' || normalized === 'anthropic') {
+    return normalized;
+  }
+  return 'openai';
+}
+
 export interface CustomModelConfig {
   id: string;
   supportsTools: boolean;
@@ -30,6 +48,7 @@ interface CustomProviderRow {
   id: string;
   name: string;
   slug: string;
+  protocol: string;
   base_url: string;
   api_key_encrypted: string | null;
   api_key_iv: string | null;
@@ -44,6 +63,7 @@ export interface CustomProviderRecord {
   id: string;
   name: string;
   slug: string;
+  protocol: CustomProviderProtocol;
   baseUrl: string;
   hasApiKey: boolean;
   models: CustomModelConfig[];
@@ -120,6 +140,7 @@ function toRecord(row: CustomProviderRow): CustomProviderRecord {
     id: row.id,
     name: row.name,
     slug: row.slug,
+    protocol: normalizeCustomProviderProtocol(row.protocol),
     baseUrl: row.base_url,
     hasApiKey: row.api_key_encrypted !== null,
     models: JSON.parse(row.models) as CustomModelConfig[],
@@ -144,11 +165,11 @@ const selectBySlug = db.prepare(`SELECT * FROM custom_providers WHERE slug = $sl
 
 const insertProvider = db.prepare(`
   INSERT INTO custom_providers (
-    id, name, slug, base_url,
+    id, name, slug, protocol, base_url,
     api_key_encrypted, api_key_iv, api_key_tag,
     models, is_active, created_at, updated_at
   ) VALUES (
-    $id, $name, $slug, $baseUrl,
+    $id, $name, $slug, $protocol, $baseUrl,
     $apiKeyEncrypted, $apiKeyIv, $apiKeyTag,
     $models, 1, $now, $now
   )
@@ -157,6 +178,7 @@ const insertProvider = db.prepare(`
 const updateProvider = db.prepare(`
   UPDATE custom_providers SET
     name = COALESCE($name, name),
+    protocol = COALESCE($protocol, protocol),
     base_url = COALESCE($baseUrl, base_url),
     models = COALESCE($models, models),
     is_active = COALESCE($isActive, is_active),
@@ -196,6 +218,7 @@ export function getDecryptedCustomProviderKey(id: string): string | null {
 
 export async function discoverCustomProviderModels(input: {
   providerId?: string | null;
+  protocol?: CustomProviderProtocol | null;
   baseUrl?: string | null;
   apiKey?: string | null;
 }): Promise<CustomModelConfig[]> {
@@ -204,17 +227,30 @@ export async function discoverCustomProviderModels(input: {
     : null;
 
   const baseUrl = (input.baseUrl ?? provider?.base_url ?? '').trim().replace(/\/+$/, '');
+  const protocol = normalizeCustomProviderProtocol(input.protocol ?? provider?.protocol ?? 'openai');
   if (!baseUrl) {
     throw new Error('Base URL es obligatoria para descubrir modelos');
   }
 
   const apiKey = input.apiKey?.trim() || (provider ? getDecryptedCustomProviderKey(provider.id) : null);
   const headers = new Headers({ Accept: 'application/json' });
-  if (apiKey) {
-    headers.set('Authorization', `Bearer ${apiKey}`);
+  let modelsUrl = `${baseUrl}/models`;
+  if (protocol === 'openai') {
+    if (apiKey) {
+      headers.set('Authorization', `Bearer ${apiKey}`);
+    }
+  } else if (protocol === 'gemini') {
+    if (apiKey) {
+      headers.set('x-goog-api-key', apiKey);
+    }
+  } else if (protocol === 'anthropic') {
+    headers.set('anthropic-version', '2023-06-01');
+    if (apiKey) {
+      headers.set('x-api-key', apiKey);
+    }
   }
 
-  const response = await fetch(`${baseUrl}/models`, {
+  const response = await fetch(modelsUrl, {
     method: 'GET',
     headers,
   });
@@ -255,6 +291,7 @@ export async function discoverCustomProviderModels(input: {
 export function createCustomProvider(input: {
   id: string;
   name: string;
+  protocol?: CustomProviderProtocol;
   baseUrl: string;
   apiKey?: string | null;
   models: CustomModelConfig[];
@@ -285,6 +322,7 @@ export function createCustomProvider(input: {
     $id: input.id,
     $name: input.name.trim(),
     $slug: slug,
+    $protocol: normalizeCustomProviderProtocol(input.protocol),
     $baseUrl: input.baseUrl.trim(),
     $apiKeyEncrypted: apiKeyEncrypted,
     $apiKeyIv: apiKeyIv,
@@ -300,6 +338,7 @@ export function updateCustomProvider(
   id: string,
   input: {
     name?: string;
+    protocol?: CustomProviderProtocol;
     baseUrl?: string;
     apiKey?: string | null;
     models?: CustomModelConfig[];
@@ -321,6 +360,7 @@ export function updateCustomProvider(
   updateProvider.run({
     $id: id,
     $name: input.name?.trim() ?? null,
+    $protocol: input.protocol ? normalizeCustomProviderProtocol(input.protocol) : null,
     $baseUrl: input.baseUrl?.trim() ?? null,
     $apiKeyEncrypted: apiKeyEncrypted,
     $apiKeyIv: apiKeyIv,

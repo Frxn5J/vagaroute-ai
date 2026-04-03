@@ -44,7 +44,7 @@ Your App  →  VagaRoute AI Gateway  →  Groq / Gemini / OpenRouter / Mistral /
 - **Automatic failover** — up to 10 retries across providers when one fails
 
 ### 🔌 Custom Providers (Bring Your Own)
-- **OpenAI Compatible:** Connect to any remote provider (e.g., vLLM, Ollama, Together AI, DeepSeek) natively from the dashboard.
+- **Multi-Protocol:** Connect OpenAI-compatible APIs plus Gemini API or Anthropic Messages endpoints directly from the dashboard.
 - **Full Control:** Configure Custom Base URLs, API Keys, and Models.
 - **Granular Features:** Toggle Tool/Vision support per custom model explicitly.
 
@@ -404,7 +404,7 @@ The built-in web dashboard (fully localized with built-in i18n support, includin
 - **Service Key management** — add provider API keys, set priority, monitor cooldown state
 - **Rate limit rules** — configure RPM/RPD/TPM/TPD per provider or model
 - **Project management** — create projects, invite members, set budgets
-- **Custom Providers** — add, test, and manage any external OpenAI-compatible API from the UI
+- **Custom Providers** — add, test, and manage external OpenAI-, Gemini-, or Anthropic-compatible APIs from the UI
 - **Model Aliases** — map standard model names (e.g., `gpt-4o`) to actual backend resources
 
 ---

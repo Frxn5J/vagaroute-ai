@@ -1,7 +1,34 @@
 const app = document.querySelector('#app');
 
 function createEmptyCustomProviderDraft() {
-  return { name: '', baseUrl: '', apiKey: '', models: [] };
+  return { name: '', protocol: 'openai', baseUrl: '', apiKey: '', models: [] };
+}
+
+function getCustomProviderProtocolOptions() {
+  return [
+    { value: 'openai', label: 'OpenAI compatible' },
+    { value: 'gemini', label: 'Gemini API' },
+    { value: 'anthropic', label: 'Anthropic Messages' },
+  ];
+}
+
+function formatCustomProviderProtocol(protocol) {
+  const labels = {
+    openai: 'OpenAI',
+    gemini: 'Gemini',
+    anthropic: 'Anthropic',
+  };
+  return labels[String(protocol || 'openai').toLowerCase()] || 'OpenAI';
+}
+
+function getCustomProviderBaseUrlPlaceholder(protocol) {
+  if (protocol === 'gemini') {
+    return 'https://generativelanguage.googleapis.com/v1beta';
+  }
+  if (protocol === 'anthropic') {
+    return 'https://api.anthropic.com/v1';
+  }
+  return 'https://api.ejemplo.com/v1';
 }
 
 function createEmptyCustomProviderDiscoveryState() {
@@ -2672,12 +2699,17 @@ function mergeDiscoveredCustomProviderModels(existingModels, discoveredModels) {
   return merged;
 }
 
-function renderCustomProviderDiscovery(scope) {
+function renderCustomProviderDiscovery(scope, protocol = 'openai') {
   const discovery = state.cpDiscovery[scope] || { loading: false, message: '' };
-  const buttonLabel = discovery.loading ? 'Consultando /models...' : 'Autocargar modelos';
+  const targetLabel = protocol === 'gemini'
+    ? '/models con x-goog-api-key'
+    : protocol === 'anthropic'
+      ? '/models con x-api-key'
+      : '/models del provider';
+  const buttonLabel = discovery.loading ? `Consultando ${targetLabel}...` : 'Autocargar modelos';
   const baseHelp = scope === 'edit'
-    ? 'Usa la Base URL actual y, si no escribes una nueva key, reutiliza la guardada.'
-    : 'Consulta /models del provider y fusiona lo encontrado con tu lista actual.';
+    ? `Usa la Base URL actual y, si no escribes una nueva key, reutiliza la guardada para consultar ${targetLabel}.`
+    : `Consulta ${targetLabel} y fusiona lo encontrado con tu lista actual.`;
 
   return `
     <div style="margin-bottom: 0.75rem;">
@@ -2695,7 +2727,7 @@ function renderCustomProviderDiscovery(scope) {
   `;
 }
 
-function renderModelsBuilder(models, scope) {
+function renderModelsBuilder(models, scope, protocol = 'openai') {
   const rows = models.map((model, index) => `
     <div class="cp-model-row">
       <input
@@ -2743,7 +2775,7 @@ function renderModelsBuilder(models, scope) {
 
   return `
     <div class="cp-models-section">
-      ${renderCustomProviderDiscovery(scope)}
+      ${renderCustomProviderDiscovery(scope, protocol)}
       <div class="row-between" style="margin-bottom: 0.6rem;">
         <span style="font-size: 0.8rem; font-weight: 600; color: var(--muted-light); letter-spacing: 0.01em;">Modelos</span>
         <button class="ghost-button" type="button" data-action="cp-add-model" data-scope="${escapeHtml(scope)}" style="padding: 0.35rem 0.75rem; font-size: 0.8rem;">
@@ -2763,20 +2795,29 @@ function renderSettingsCustomProviders() {
   const createForm = `
     <article class="panel">
       <h3>Nuevo proveedor</h3>
-      <p class="muted">Conecta cualquier endpoint compatible con OpenAI. El router lo incluye en el pool automaticamente.</p>
+      <p class="muted">Conecta endpoints compatibles con OpenAI, Gemini o Anthropic. El router los traduce al formato interno y los incluye en el pool automaticamente.</p>
       <form data-form="create-custom-provider" style="margin-top: 1rem;">
         <div class="grid-2">
           <label>Nombre
             <input name="name" placeholder="Mi proveedor local" required value="${escapeHtml(draft.name)}" data-action="cp-draft-name" />
           </label>
-          <label>Base URL
-            <input name="baseUrl" placeholder="https://api.ejemplo.com/v1" required value="${escapeHtml(draft.baseUrl)}" data-action="cp-draft-baseUrl" />
+          <label>Protocolo
+            <select name="protocol" data-action="cp-draft-protocol">
+              ${getCustomProviderProtocolOptions().map((option) => `
+                <option value="${escapeHtml(option.value)}" ${draft.protocol === option.value ? 'selected' : ''}>${escapeHtml(option.label)}</option>
+              `).join('')}
+            </select>
           </label>
         </div>
-        <label>API Key <span class="muted" style="font-weight: 400;">(opcional)</span>
-          <input name="apiKey" type="password" placeholder="sk-..." autocomplete="new-password" value="${escapeHtml(draft.apiKey)}" data-action="cp-draft-apiKey" />
-        </label>
-        ${renderModelsBuilder(draft.models, 'draft')}
+        <div class="grid-2">
+          <label>Base URL
+            <input name="baseUrl" placeholder="${escapeHtml(getCustomProviderBaseUrlPlaceholder(draft.protocol))}" required value="${escapeHtml(draft.baseUrl)}" data-action="cp-draft-baseUrl" />
+          </label>
+          <label>API Key <span class="muted" style="font-weight: 400;">(opcional)</span>
+            <input name="apiKey" type="password" placeholder="${draft.protocol === 'gemini' ? 'AIza...' : draft.protocol === 'anthropic' ? 'sk-ant-...' : 'sk-...'}" autocomplete="new-password" value="${escapeHtml(draft.apiKey)}" data-action="cp-draft-apiKey" />
+          </label>
+        </div>
+        ${renderModelsBuilder(draft.models, 'draft', draft.protocol)}
         <div class="button-row">
           <button class="primary-button" type="submit">Crear proveedor</button>
         </div>
@@ -2793,30 +2834,39 @@ function renderSettingsCustomProviders() {
         </div>
         <button class="ghost-button" type="button" data-action="cancel-edit-custom-provider">Cancelar</button>
       </div>
-      <form data-form="edit-custom-provider">
-        <input type="hidden" name="id" value="${escapeHtml(editing.id)}" />
-        <div class="grid-2">
-          <label>Nombre
-            <input name="name" required value="${escapeHtml(editing.name)}" data-action="cp-edit-name" />
-          </label>
-          <label>Base URL
-            <input name="baseUrl" required value="${escapeHtml(editing.baseUrl)}" data-action="cp-edit-baseUrl" />
-          </label>
-        </div>
-        <label>${editing.hasApiKey ? 'Nueva API Key <span class="muted" style="font-weight:400;">(dejar vacío para conservar la actual)</span>' : 'API Key <span class="muted" style="font-weight:400;">(opcional)</span>'}
-          <input name="newApiKey" type="password" placeholder="${editing.hasApiKey ? 'Nueva clave o vacío para no cambiar' : 'sk-...'}" autocomplete="new-password" value="${escapeHtml(editing.newApiKey || '')}" data-action="cp-edit-apiKey" />
-        </label>
-        ${editing.hasApiKey ? `
-          <div>
-            <button class="danger-button" type="button" data-action="cp-clear-api-key" style="font-size: 0.8rem;">
-              Eliminar API key almacenada
-            </button>
+        <form data-form="edit-custom-provider">
+          <input type="hidden" name="id" value="${escapeHtml(editing.id)}" />
+          <div class="grid-2">
+            <label>Nombre
+              <input name="name" required value="${escapeHtml(editing.name)}" data-action="cp-edit-name" />
+            </label>
+            <label>Protocolo
+              <select name="protocol" data-action="cp-edit-protocol">
+                ${getCustomProviderProtocolOptions().map((option) => `
+                  <option value="${escapeHtml(option.value)}" ${editing.protocol === option.value ? 'selected' : ''}>${escapeHtml(option.label)}</option>
+                `).join('')}
+              </select>
+            </label>
           </div>
-        ` : ''}
-        ${renderModelsBuilder(editing.models, 'edit')}
-        <div class="button-row">
-          <button class="primary-button" type="submit">Guardar cambios</button>
-          <button class="ghost-button" type="button" data-action="cancel-edit-custom-provider">Cancelar</button>
+          <div class="grid-2">
+            <label>Base URL
+              <input name="baseUrl" required placeholder="${escapeHtml(getCustomProviderBaseUrlPlaceholder(editing.protocol))}" value="${escapeHtml(editing.baseUrl)}" data-action="cp-edit-baseUrl" />
+            </label>
+            <label>${editing.hasApiKey ? 'Nueva API Key <span class="muted" style="font-weight:400;">(dejar vacío para conservar la actual)</span>' : 'API Key <span class="muted" style="font-weight:400;">(opcional)</span>'}
+              <input name="newApiKey" type="password" placeholder="${editing.protocol === 'gemini' ? 'AIza...' : editing.protocol === 'anthropic' ? 'sk-ant-...' : 'sk-...'}" autocomplete="new-password" value="${escapeHtml(editing.newApiKey || '')}" data-action="cp-edit-apiKey" />
+            </label>
+          </div>
+          ${editing.hasApiKey ? `
+            <div>
+              <button class="danger-button" type="button" data-action="cp-clear-api-key" style="font-size: 0.8rem;">
+              Eliminar API key almacenada
+              </button>
+            </div>
+          ` : ''}
+          ${renderModelsBuilder(editing.models, 'edit', editing.protocol)}
+          <div class="button-row">
+            <button class="primary-button" type="submit">Guardar cambios</button>
+            <button class="ghost-button" type="button" data-action="cancel-edit-custom-provider">Cancelar</button>
         </div>
       </form>
     </article>
@@ -2870,6 +2920,9 @@ function renderSettingsCustomProviders() {
                 <div class="cp-provider-meta">
                   <span class="muted">Slug:</span>
                   <code style="font-family: var(--font-mono); font-size: 0.78rem; color: var(--muted-light);">${escapeHtml(provider.slug)}</code>
+                  <span class="muted">·</span>
+                  <span class="muted">Protocolo:</span>
+                  <span class="tag">${escapeHtml(formatCustomProviderProtocol(provider.protocol))}</span>
                   <span class="muted">·</span>
                   <span class="muted">URL:</span>
                   <code style="font-family: var(--font-mono); font-size: 0.78rem; color: var(--muted-light);">${escapeHtml(provider.baseUrl)}</code>
@@ -4054,6 +4107,7 @@ async function submitCreateCustomProvider(form) {
     method: 'POST',
     body: {
       name: String(formData.get('name') || '').trim(),
+      protocol: String(formData.get('protocol') || state.cpDraft.protocol || 'openai').trim() || 'openai',
       baseUrl: String(formData.get('baseUrl') || '').trim(),
       apiKey: String(formData.get('apiKey') || '').trim() || null,
       models: models.map((m) => ({
@@ -4082,6 +4136,7 @@ async function submitUpdateCustomProvider(form) {
   const newApiKey = String(state.cpEditing.newApiKey || '').trim();
   const payload = {
     name: String(state.cpEditing.name || '').trim() || undefined,
+    protocol: String(state.cpEditing.protocol || 'openai').trim() || 'openai',
     baseUrl: String(state.cpEditing.baseUrl || '').trim() || undefined,
     models: models.map((m) => ({
       id: m.id.trim(),
@@ -4122,11 +4177,13 @@ async function discoverCustomProviderModels(scope, trigger) {
 
       body = {
         providerId: state.cpEditing.id,
+        protocol: state.cpEditing.protocol || 'openai',
         baseUrl: state.cpEditing.baseUrl.trim(),
         apiKey: state.cpEditing.newApiKey.trim() || undefined,
       };
     } else {
       body = {
+        protocol: state.cpDraft.protocol || 'openai',
         baseUrl: state.cpDraft.baseUrl.trim(),
         apiKey: state.cpDraft.apiKey.trim() || undefined,
       };
@@ -4530,6 +4587,7 @@ async function handleClick(event) {
           id: provider.id,
           name: provider.name,
           slug: provider.slug,
+          protocol: provider.protocol || 'openai',
           baseUrl: provider.baseUrl,
           hasApiKey: provider.hasApiKey,
           newApiKey: '',
@@ -4681,6 +4739,12 @@ function handleInput(event) {
     return;
   }
 
+  if (action === 'cp-draft-protocol' && target instanceof HTMLSelectElement) {
+    state.cpDraft.protocol = target.value || 'openai';
+    render();
+    return;
+  }
+
   if (action === 'cp-draft-apiKey' && target instanceof HTMLInputElement) {
     state.cpDraft.apiKey = target.value;
     return;
@@ -4693,6 +4757,12 @@ function handleInput(event) {
 
   if (action === 'cp-edit-baseUrl' && target instanceof HTMLInputElement && state.cpEditing) {
     state.cpEditing.baseUrl = target.value;
+    return;
+  }
+
+  if (action === 'cp-edit-protocol' && target instanceof HTMLSelectElement && state.cpEditing) {
+    state.cpEditing.protocol = target.value || 'openai';
+    render();
     return;
   }
 
