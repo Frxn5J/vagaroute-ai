@@ -1,6 +1,6 @@
 import type { AuthContext } from '../../middlewares/auth';
 import { isAdmin } from '../../middlewares/auth';
-import { createServiceApiKey, updateServiceApiKey } from '../../core/db';
+import { createServiceApiKey, deleteServiceApiKey, updateServiceApiKey } from '../../core/db';
 import { listConfiguredProviderKeys } from '../../core/providerKeys';
 import { reloadPool } from '../../core/pool';
 import { encryptSecret, hashToken, maskSecret, randomToken } from '../../utils/crypto';
@@ -69,6 +69,16 @@ export async function handleServiceKeys(
       const message = (err as { message?: string })?.message ?? 'No se pudo actualizar la service key';
       return errorResponse(req, 400, message, 'service_key_error');
     }
+  }
+
+  // ── DELETE /api/service-keys/:id ──────────────────────────────────────────
+
+  if (req.method === 'DELETE' && serviceKeyMatch) {
+    if (!isAdmin(auth)) return errorResponse(req, 403, 'Solo administradores', 'forbidden');
+    const deleted = deleteServiceApiKey(serviceKeyMatch[1] ?? '');
+    if (!deleted) return errorResponse(req, 404, 'Service key no encontrada', 'not_found');
+    await reloadPool('service-key-deleted');
+    return jsonResponse(req, { ok: true, serviceKeys: listConfiguredProviderKeys() });
   }
 
   return null;

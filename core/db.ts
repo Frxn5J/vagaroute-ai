@@ -1929,6 +1929,47 @@ export function updateServiceApiKey(serviceKeyId: string, input: {
   });
 }
 
+export function replaceServiceApiKeySecret(serviceKeyId: string, input: {
+  keyHash: string;
+  keyHint: string;
+  encryptedValue: string;
+  valueIv: string;
+  valueTag: string;
+}): void {
+  const result = db.query(`
+    UPDATE service_api_keys
+    SET
+      key_hash = $keyHash,
+      key_hint = $keyHint,
+      encrypted_value = $encryptedValue,
+      value_iv = $valueIv,
+      value_tag = $valueTag,
+      is_active = 1,
+      cooldown_until = 0,
+      last_error = NULL
+    WHERE id = $id
+  `).run({
+    $id: serviceKeyId,
+    $keyHash: input.keyHash,
+    $keyHint: input.keyHint,
+    $encryptedValue: input.encryptedValue,
+    $valueIv: input.valueIv,
+    $valueTag: input.valueTag,
+  }) as { changes?: number };
+
+  if (Number(result?.changes ?? 0) === 0) {
+    throw new Error('Service key not found');
+  }
+}
+
+export function deleteServiceApiKey(serviceKeyId: string): boolean {
+  const result = db.query(`DELETE FROM service_api_keys WHERE id = $id`).run({
+    $id: serviceKeyId,
+  }) as { changes?: number };
+
+  return Number(result?.changes ?? 0) > 0;
+}
+
 export function clearExpiredServiceKeyCooldowns(): void {
   db.query(`
     UPDATE service_api_keys

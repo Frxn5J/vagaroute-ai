@@ -1,5 +1,16 @@
 const app = document.querySelector('#app');
 
+function createEmptyCustomProviderDraft() {
+  return { name: '', baseUrl: '', apiKey: '', models: [] };
+}
+
+function createEmptyCustomProviderDiscoveryState() {
+  return {
+    draft: { loading: false, message: '' },
+    edit: { loading: false, message: '' },
+  };
+}
+
 const providerOptions = [
   'openrouter',
   'groq',
@@ -49,8 +60,9 @@ const state = {
     },
   ],
   busy: false,
-  cpDraft: { name: '', baseUrl: '', apiKey: '', models: [] },
+  cpDraft: createEmptyCustomProviderDraft(),
   cpEditing: null,
+  cpDiscovery: createEmptyCustomProviderDiscoveryState(),
 };
 
 function getSettingsPages() {
@@ -383,9 +395,14 @@ function renderServiceKeyStateCell(item) {
   }
 
   return `
-    <button class="${item.isActive ? 'ghost-button' : 'danger-button'}" type="button" data-action="toggle-service-key" data-id="${escapeHtml(item.id)}" data-active="${item.isActive}">
-      ${item.isActive ? 'Activa' : 'Inactiva'}
-    </button>
+    <div class="button-row">
+      <button class="${item.isActive ? 'ghost-button' : 'danger-button'}" type="button" data-action="toggle-service-key" data-id="${escapeHtml(item.id)}" data-active="${item.isActive}">
+        ${item.isActive ? 'Activa' : 'Inactiva'}
+      </button>
+      <button class="danger-button" type="button" data-action="delete-service-key" data-id="${escapeHtml(item.id)}">
+        Eliminar
+      </button>
+    </div>
   `;
 }
 
@@ -2625,6 +2642,59 @@ function renderSettingsGuideModal() {
   `;
 }
 
+function mergeDiscoveredCustomProviderModels(existingModels, discoveredModels) {
+  const existingMap = new Map(
+    (existingModels || [])
+      .filter((model) => typeof model?.id === 'string' && model.id.trim())
+      .map((model) => [model.id.trim(), { ...model, id: model.id.trim() }]),
+  );
+
+  const merged = [];
+  for (const model of discoveredModels || []) {
+    const id = String(model?.id || '').trim();
+    if (!id) {
+      continue;
+    }
+
+    const current = existingMap.get(id);
+    merged.push(current || {
+      id,
+      supportsTools: Boolean(model?.supportsTools),
+      supportsVision: Boolean(model?.supportsVision),
+    });
+    existingMap.delete(id);
+  }
+
+  for (const model of existingMap.values()) {
+    merged.push(model);
+  }
+
+  return merged;
+}
+
+function renderCustomProviderDiscovery(scope) {
+  const discovery = state.cpDiscovery[scope] || { loading: false, message: '' };
+  const buttonLabel = discovery.loading ? 'Consultando /models...' : 'Autocargar modelos';
+  const baseHelp = scope === 'edit'
+    ? 'Usa la Base URL actual y, si no escribes una nueva key, reutiliza la guardada.'
+    : 'Consulta /models del provider y fusiona lo encontrado con tu lista actual.';
+
+  return `
+    <div style="margin-bottom: 0.75rem;">
+      <div class="row-between" style="gap: 0.75rem; align-items: center;">
+        <div>
+          <div style="font-size: 0.8rem; font-weight: 600; color: var(--muted-light); letter-spacing: 0.01em;">Descubrimiento automatico</div>
+          <p class="muted" style="margin: 0.25rem 0 0;">${escapeHtml(baseHelp)}</p>
+        </div>
+        <button class="secondary-button" type="button" data-action="cp-discover-models" data-scope="${escapeHtml(scope)}" ${discovery.loading ? 'disabled' : ''}>
+          ${escapeHtml(buttonLabel)}
+        </button>
+      </div>
+      ${discovery.message ? `<p class="muted" style="margin: 0.5rem 0 0;">${escapeHtml(discovery.message)}</p>` : ''}
+    </div>
+  `;
+}
+
 function renderModelsBuilder(models, scope) {
   const rows = models.map((model, index) => `
     <div class="cp-model-row">
@@ -2673,6 +2743,7 @@ function renderModelsBuilder(models, scope) {
 
   return `
     <div class="cp-models-section">
+      ${renderCustomProviderDiscovery(scope)}
       <div class="row-between" style="margin-bottom: 0.6rem;">
         <span style="font-size: 0.8rem; font-weight: 600; color: var(--muted-light); letter-spacing: 0.01em;">Modelos</span>
         <button class="ghost-button" type="button" data-action="cp-add-model" data-scope="${escapeHtml(scope)}" style="padding: 0.35rem 0.75rem; font-size: 0.8rem;">
@@ -2726,14 +2797,14 @@ function renderSettingsCustomProviders() {
         <input type="hidden" name="id" value="${escapeHtml(editing.id)}" />
         <div class="grid-2">
           <label>Nombre
-            <input name="name" required value="${escapeHtml(editing.name)}" />
+            <input name="name" required value="${escapeHtml(editing.name)}" data-action="cp-edit-name" />
           </label>
           <label>Base URL
-            <input name="baseUrl" required value="${escapeHtml(editing.baseUrl)}" />
+            <input name="baseUrl" required value="${escapeHtml(editing.baseUrl)}" data-action="cp-edit-baseUrl" />
           </label>
         </div>
         <label>${editing.hasApiKey ? 'Nueva API Key <span class="muted" style="font-weight:400;">(dejar vacío para conservar la actual)</span>' : 'API Key <span class="muted" style="font-weight:400;">(opcional)</span>'}
-          <input name="newApiKey" type="password" placeholder="${editing.hasApiKey ? 'Nueva clave o vacío para no cambiar' : 'sk-...'}" autocomplete="new-password" />
+          <input name="newApiKey" type="password" placeholder="${editing.hasApiKey ? 'Nueva clave o vacío para no cambiar' : 'sk-...'}" autocomplete="new-password" value="${escapeHtml(editing.newApiKey || '')}" data-action="cp-edit-apiKey" />
         </label>
         ${editing.hasApiKey ? `
           <div>
@@ -3992,7 +4063,8 @@ async function submitCreateCustomProvider(form) {
       })),
     },
   });
-  state.cpDraft = { name: '', baseUrl: '', apiKey: '', models: [] };
+  state.cpDraft = createEmptyCustomProviderDraft();
+  state.cpDiscovery.draft = { loading: false, message: '' };
   await refreshDashboard();
   setFlash('Proveedor creado. Pool recargado.');
 }
@@ -4007,10 +4079,10 @@ async function submitUpdateCustomProvider(form) {
   if (models.length === 0) {
     throw new Error('El proveedor debe tener al menos un modelo.');
   }
-  const newApiKey = String(formData.get('newApiKey') || '').trim();
+  const newApiKey = String(state.cpEditing.newApiKey || '').trim();
   const payload = {
-    name: String(formData.get('name') || '').trim() || undefined,
-    baseUrl: String(formData.get('baseUrl') || '').trim() || undefined,
+    name: String(state.cpEditing.name || '').trim() || undefined,
+    baseUrl: String(state.cpEditing.baseUrl || '').trim() || undefined,
     models: models.map((m) => ({
       id: m.id.trim(),
       supportsTools: Boolean(m.supportsTools),
@@ -4025,8 +4097,76 @@ async function submitUpdateCustomProvider(form) {
     body: payload,
   });
   state.cpEditing = null;
+  state.cpDiscovery.edit = { loading: false, message: '' };
   await refreshDashboard();
   setFlash('Proveedor actualizado. Pool recargado.');
+}
+
+async function discoverCustomProviderModels(scope, trigger) {
+  const discoveryState = state.cpDiscovery[scope];
+  if (!discoveryState) {
+    throw new Error('Scope invalido para descubrir modelos.');
+  }
+
+  discoveryState.loading = true;
+  discoveryState.message = 'Consultando /models del proveedor...';
+  render();
+
+  try {
+    let body;
+
+    if (scope === 'edit') {
+      if (!state.cpEditing) {
+        throw new Error('No hay proveedor en edicion.');
+      }
+
+      body = {
+        providerId: state.cpEditing.id,
+        baseUrl: state.cpEditing.baseUrl.trim(),
+        apiKey: state.cpEditing.newApiKey.trim() || undefined,
+      };
+    } else {
+      body = {
+        baseUrl: state.cpDraft.baseUrl.trim(),
+        apiKey: state.cpDraft.apiKey.trim() || undefined,
+      };
+    }
+
+    if (!body.baseUrl) {
+      throw new Error('Primero define la Base URL del proveedor.');
+    }
+
+    const response = await apiRequest('/api/custom-providers/discover-models', {
+      method: 'POST',
+      body,
+    });
+
+    const discoveredModels = Array.isArray(response.models) ? response.models : [];
+    const currentModels = scope === 'edit'
+      ? state.cpEditing?.models
+      : state.cpDraft.models;
+
+    if (!currentModels) {
+      throw new Error('No se pudo acceder a la lista actual de modelos.');
+    }
+
+    const mergedModels = mergeDiscoveredCustomProviderModels(currentModels, discoveredModels);
+    if (scope === 'edit' && state.cpEditing) {
+      state.cpEditing.models = mergedModels;
+    } else {
+      state.cpDraft.models = mergedModels;
+    }
+
+    discoveryState.message = `Se detectaron ${discoveredModels.length} modelo${discoveredModels.length === 1 ? '' : 's'} y se fusionaron con la lista actual.`;
+    setFlash('Modelos descubiertos desde /models. Revisa la lista antes de guardar.');
+  } catch (error) {
+    const flash = buildFlashFromError(error, 'No se pudieron descubrir modelos del proveedor.');
+    discoveryState.message = flash.message;
+    throw error;
+  } finally {
+    discoveryState.loading = false;
+    render();
+  }
 }
 
 async function submitCreateModelAlias(form) {
@@ -4108,6 +4248,14 @@ async function toggleServiceKey(id, active) {
   });
   await refreshDashboard();
   setFlash('Estado de service key actualizado.');
+}
+
+async function deleteServiceKey(id) {
+  await apiRequest(`/api/service-keys/${id}`, {
+    method: 'DELETE',
+  });
+  await refreshDashboard();
+  setFlash('Service key eliminada y pool recargado.');
 }
 
 async function requestManagedPasswordReset(userId) {
@@ -4328,6 +4476,13 @@ async function handleClick(event) {
       return;
     }
 
+    if (action === 'delete-service-key') {
+      const id = target.dataset.id;
+      if (!confirm('¿Eliminar esta service key guardada del panel?')) return;
+      await deleteServiceKey(id);
+      return;
+    }
+
     if (action === 'request-user-reset') {
       await requestManagedPasswordReset(target.dataset.id);
       return;
@@ -4337,6 +4492,11 @@ async function handleClick(event) {
       await apiRequest('/api/admin/reset', { method: 'POST' });
       await refreshDashboard();
       setFlash('Estados del router reiniciados.');
+    }
+
+    if (action === 'cp-discover-models') {
+      await discoverCustomProviderModels(target.dataset.scope || 'draft', target);
+      return;
     }
 
     if (action === 'cp-add-model') {
@@ -4365,12 +4525,14 @@ async function handleClick(event) {
       const providers = state.dashboard.customProviders || [];
       const provider = providers.find((p) => p.id === id);
       if (provider) {
+        state.cpDiscovery.edit = { loading: false, message: '' };
         state.cpEditing = {
           id: provider.id,
           name: provider.name,
           slug: provider.slug,
           baseUrl: provider.baseUrl,
           hasApiKey: provider.hasApiKey,
+          newApiKey: '',
           models: provider.models.map((m) => ({ ...m })),
         };
         render();
@@ -4380,6 +4542,7 @@ async function handleClick(event) {
 
     if (action === 'cancel-edit-custom-provider') {
       state.cpEditing = null;
+      state.cpDiscovery.edit = { loading: false, message: '' };
       render();
       return;
     }
@@ -4391,6 +4554,7 @@ async function handleClick(event) {
         body: { apiKey: null },
       });
       state.cpEditing.hasApiKey = false;
+      state.cpEditing.newApiKey = '';
       await refreshDashboard();
       setFlash('API key eliminada del proveedor.');
       return;
@@ -4413,6 +4577,7 @@ async function handleClick(event) {
       if (!confirm('¿Eliminar este proveedor y quitar sus modelos del pool?')) return;
       await apiRequest(`/api/custom-providers/${id}`, { method: 'DELETE' });
       if (state.cpEditing?.id === id) state.cpEditing = null;
+      state.cpDiscovery.edit = { loading: false, message: '' };
       await refreshDashboard();
       setFlash('Proveedor eliminado del pool.');
       return;
@@ -4518,6 +4683,21 @@ function handleInput(event) {
 
   if (action === 'cp-draft-apiKey' && target instanceof HTMLInputElement) {
     state.cpDraft.apiKey = target.value;
+    return;
+  }
+
+  if (action === 'cp-edit-name' && target instanceof HTMLInputElement && state.cpEditing) {
+    state.cpEditing.name = target.value;
+    return;
+  }
+
+  if (action === 'cp-edit-baseUrl' && target instanceof HTMLInputElement && state.cpEditing) {
+    state.cpEditing.baseUrl = target.value;
+    return;
+  }
+
+  if (action === 'cp-edit-apiKey' && target instanceof HTMLInputElement && state.cpEditing) {
+    state.cpEditing.newApiKey = target.value;
     return;
   }
 

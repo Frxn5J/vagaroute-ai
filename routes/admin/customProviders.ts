@@ -3,6 +3,7 @@ import { isAdmin } from '../../middlewares/auth';
 import {
   createCustomProvider,
   deleteCustomProvider,
+  discoverCustomProviderModels,
   listCustomProviders,
   updateCustomProvider,
   type CustomModelConfig,
@@ -63,6 +64,30 @@ export async function handleCustomProviders(
       return jsonResponse(req, { ok: true, customProvider: record }, 201);
     } catch (err) {
       const message = (err as { message?: string })?.message ?? 'No se pudo crear el proveedor';
+      return errorResponse(req, 400, message, 'custom_provider_error');
+    }
+  }
+
+  // ── POST /api/custom-providers/discover-models ────────────────────────────
+
+  if (req.method === 'POST' && pathname === '/api/custom-providers/discover-models') {
+    if (!isAdmin(auth)) return errorResponse(req, 403, 'Solo administradores', 'forbidden');
+    try {
+      const body = await readJsonBody<{
+        providerId?: string;
+        baseUrl?: string;
+        apiKey?: string | null;
+      }>(req);
+
+      const models = await discoverCustomProviderModels({
+        providerId: body.providerId,
+        baseUrl: body.baseUrl,
+        apiKey: body.apiKey,
+      });
+
+      return jsonResponse(req, { ok: true, models });
+    } catch (err) {
+      const message = (err as { message?: string })?.message ?? 'No se pudieron descubrir modelos del proveedor';
       return errorResponse(req, 400, message, 'custom_provider_error');
     }
   }

@@ -2,11 +2,13 @@ import {
   clearServiceApiKeyCooldown,
   getDecryptedServiceKeysByProvider,
   listServiceApiKeys,
+  replaceServiceApiKeySecret,
   setServiceApiKeyActive,
   setServiceApiKeyCooldown,
   touchServiceApiKey,
 } from './db';
 import { logger } from '../utils/logger';
+import { encryptSecret, hashToken, maskSecret } from '../utils/crypto';
 
 export type ProviderName =
   | 'alibaba'
@@ -70,10 +72,233 @@ const ENV_PROVIDER_KEYS: Record<ProviderName, { envName: string; metadata?: Reco
 };
 
 const HOUR_MS = 60 * 60_000;
+const QWEN_REFRESH_THRESHOLD_MS = 10 * 60_000;
+const QWEN_REFRESH_TIMEOUT_MS = 10_000;
+const QWEN_REFRESH_URL = 'https://qwen.aikit.club/v1/refresh';
 const envCooldowns = new Map<string, number>();
+const runtimeEnvProviderKeys = new Map<string, string>();
+const qwenRefreshInFlight = new Map<string, Promise<ProviderKeyCandidate>>();
+
+function getCandidateRuntimeKey(provider: ProviderName, label: string): string {
+  return `${provider}:${label}:runtime`;
+}
 
 function candidateKey(provider: ProviderName, label: string): string {
   return `${provider}:${label}`;
+}
+
+function parseJwtPayload(token: string): Record<string, unknown> | null {
+  const parts = token.split('.');
+  if (parts.length < 2) {
+    return null;
+  }
+
+  try {
+    const payloadPart = parts[1];
+    if (!payloadPart) {
+      return null;
+    }
+
+    const base64 = payloadPart
+      .replace(/-/g, '+')
+      .replace(/_/g, '/')
+      .padEnd(Math.ceil(payloadPart.length / 4) * 4, '=');
+    const raw = Buffer.from(base64, 'base64').toString('utf8');
+    const payload = JSON.parse(raw) as Record<string, unknown>;
+    return payload && typeof payload === 'object' ? payload : null;
+  } catch {
+    return null;
+  }
+}
+
+function getJwtExpiry(token: string): number | null {
+  const exp = parseJwtPayload(token)?.exp;
+  return typeof exp === 'number' && Number.isFinite(exp) ? exp * 1_000 : null;
+}
+
+function shouldRefreshQwenToken(token: string): { shouldRefresh: boolean; expiresAt: number | null } {
+  const expiresAt = getJwtExpiry(token);
+  if (!expiresAt) {
+    return { shouldRefresh: false, expiresAt: null };
+  }
+
+  return {
+    shouldRefresh: expiresAt - Date.now() <= QWEN_REFRESH_THRESHOLD_MS,
+    expiresAt,
+  };
+}
+
+function getRefreshTokenFromPayload(payload: unknown): string | null {
+  if (typeof payload === 'string' && payload.trim()) {
+    return payload.trim();
+  }
+
+  if (!payload || typeof payload !== 'object') {
+    return null;
+  }
+
+  const record = payload as Record<string, unknown>;
+  const candidates: unknown[] = [
+    record.token,
+    record.access_token,
+    record.accessToken,
+    record.api_key,
+    record.apiKey,
+    record.jwt,
+    record.data,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) {
+      return candidate.trim();
+    }
+    if (candidate && typeof candidate === 'object') {
+      const nested = getRefreshTokenFromPayload(candidate);
+      if (nested) {
+        return nested;
+      }
+    }
+  }
+
+  return null;
+}
+
+function getRefreshErrorMessage(status: number, payload: unknown): string {
+  if (payload && typeof payload === 'object') {
+    const record = payload as Record<string, unknown>;
+    if (typeof record.message === 'string' && record.message.trim()) {
+      return record.message.trim();
+    }
+    if (record.error && typeof record.error === 'object') {
+      const nested = record.error as Record<string, unknown>;
+      if (typeof nested.message === 'string' && nested.message.trim()) {
+        return nested.message.trim();
+      }
+    }
+  }
+
+  if (typeof payload === 'string' && payload.trim()) {
+    return payload.trim().slice(0, 240);
+  }
+
+  return `Qwen refresh HTTP ${status}`;
+}
+
+async function requestQwenTokenRefresh(token: string): Promise<string> {
+  const headers = {
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+  };
+
+  let response = await fetch(QWEN_REFRESH_URL, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ token }),
+    signal: AbortSignal.timeout(QWEN_REFRESH_TIMEOUT_MS),
+  });
+
+  let contentType = response.headers.get('content-type') || '';
+  let payload: unknown = contentType.includes('application/json')
+    ? await response.json()
+    : await response.text();
+
+  if (!response.ok) {
+    response = await fetch(`${QWEN_REFRESH_URL}?token=${encodeURIComponent(token)}`, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(QWEN_REFRESH_TIMEOUT_MS),
+    });
+
+    contentType = response.headers.get('content-type') || '';
+    payload = contentType.includes('application/json')
+      ? await response.json()
+      : await response.text();
+  }
+
+  if (!response.ok) {
+    throw Object.assign(new Error(getRefreshErrorMessage(response.status, payload)), {
+      status: response.status,
+    });
+  }
+
+  const refreshedToken = getRefreshTokenFromPayload(payload);
+  if (!refreshedToken) {
+    throw new Error('Qwen refresh no devolvio un token utilizable');
+  }
+
+  return refreshedToken;
+}
+
+function persistDbCandidateKey(candidate: ProviderKeyCandidate, nextToken: string): void {
+  if (!candidate.id) {
+    return;
+  }
+
+  const encrypted = encryptSecret(nextToken);
+  replaceServiceApiKeySecret(candidate.id, {
+    keyHash: hashToken(nextToken),
+    keyHint: maskSecret(nextToken),
+    encryptedValue: encrypted.ciphertext,
+    valueIv: encrypted.iv,
+    valueTag: encrypted.tag,
+  });
+}
+
+function persistEnvCandidateKey(candidate: ProviderKeyCandidate, nextToken: string): void {
+  runtimeEnvProviderKeys.set(getCandidateRuntimeKey(candidate.provider, candidate.label), nextToken);
+}
+
+async function maybeRefreshQwenCandidate(candidate: ProviderKeyCandidate): Promise<ProviderKeyCandidate> {
+  const { shouldRefresh, expiresAt } = shouldRefreshQwenToken(candidate.key);
+  if (!shouldRefresh) {
+    return candidate;
+  }
+
+  const refreshKey = candidate.id ?? candidateKey(candidate.provider, candidate.label);
+  const existing = qwenRefreshInFlight.get(refreshKey);
+  if (existing) {
+    return await existing;
+  }
+
+  const refreshPromise = (async () => {
+    try {
+      const nextToken = await requestQwenTokenRefresh(candidate.key);
+      if (!nextToken || nextToken === candidate.key) {
+        return candidate;
+      }
+
+      if (candidate.source === 'db' && candidate.id) {
+        persistDbCandidateKey(candidate, nextToken);
+      } else {
+        persistEnvCandidateKey(candidate, nextToken);
+      }
+
+      logger.info({ provider: candidate.provider, candidate: candidate.label, source: candidate.source }, 'Qwen token refreshed before expiry');
+      return {
+        ...candidate,
+        key: nextToken,
+      };
+    } catch (err) {
+      if (expiresAt && expiresAt > Date.now()) {
+        logger.warn({ provider: candidate.provider, candidate: candidate.label, source: candidate.source, err }, 'Qwen token refresh failed before expiry; using current token');
+        return candidate;
+      }
+      throw err;
+    } finally {
+      qwenRefreshInFlight.delete(refreshKey);
+    }
+  })();
+
+  qwenRefreshInFlight.set(refreshKey, refreshPromise);
+  return await refreshPromise;
+}
+
+async function prepareProviderCandidate(candidate: ProviderKeyCandidate): Promise<ProviderKeyCandidate> {
+  if (candidate.provider !== 'qwenchat') {
+    return candidate;
+  }
+
+  return await maybeRefreshQwenCandidate(candidate);
 }
 
 function getStatusFromError(err: unknown): number {
@@ -191,7 +416,8 @@ function getEnvCandidates(provider: ProviderName): ProviderKeyCandidate[] {
   const candidates: ProviderKeyCandidate[] = [];
 
   for (const spec of ENV_PROVIDER_KEYS[provider] ?? []) {
-    const raw = process.env[spec.envName]?.trim();
+    const runtimeKey = runtimeEnvProviderKeys.get(getCandidateRuntimeKey(provider, spec.envName));
+    const raw = runtimeKey?.trim() || process.env[spec.envName]?.trim();
     if (!raw || seen.has(raw)) {
       continue;
     }
@@ -226,7 +452,8 @@ function listSystemProviderKeys(): ConfiguredProviderKeyRecord[] {
     const seen = new Set<string>();
 
     for (const [index, spec] of specs.entries()) {
-      const raw = process.env[spec.envName]?.trim();
+      const runtimeKey = runtimeEnvProviderKeys.get(getCandidateRuntimeKey(provider, spec.envName));
+      const raw = runtimeKey?.trim() || process.env[spec.envName]?.trim();
       if (!raw || seen.has(raw)) {
         continue;
       }
@@ -308,12 +535,13 @@ export async function withProviderKey<T>(
 
   for (const candidate of candidates) {
     try {
-      const result = await operation(candidate);
-      if (candidate.id) {
-        clearServiceApiKeyCooldown(candidate.id);
-        touchServiceApiKey(candidate.id);
+      const preparedCandidate = await prepareProviderCandidate(candidate);
+      const result = await operation(preparedCandidate);
+      if (preparedCandidate.id) {
+        clearServiceApiKeyCooldown(preparedCandidate.id);
+        touchServiceApiKey(preparedCandidate.id);
       } else {
-        envCooldowns.delete(candidateKey(provider, candidate.label));
+        envCooldowns.delete(candidateKey(provider, preparedCandidate.label));
       }
       return result;
     } catch (err) {

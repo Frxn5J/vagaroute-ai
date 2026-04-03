@@ -52,6 +52,69 @@ export interface CustomProviderRecord {
   updatedAt: number;
 }
 
+function getModelId(value: unknown): string | null {
+  if (typeof value === 'string') {
+    const normalized = value.trim();
+    return normalized || null;
+  }
+
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const candidate = value as { id?: unknown; name?: unknown; model?: unknown };
+  for (const item of [candidate.id, candidate.name, candidate.model]) {
+    if (typeof item === 'string' && item.trim()) {
+      return item.trim();
+    }
+  }
+
+  return null;
+}
+
+function getModelItems(payload: unknown): unknown[] {
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+
+  if (!payload || typeof payload !== 'object') {
+    return [];
+  }
+
+  const record = payload as { data?: unknown; models?: unknown };
+  if (Array.isArray(record.data)) {
+    return record.data;
+  }
+  if (Array.isArray(record.models)) {
+    return record.models;
+  }
+
+  return [];
+}
+
+function getDiscoveryErrorMessage(status: number, payload: unknown): string {
+  if (payload && typeof payload === 'object') {
+    const record = payload as {
+      error?: { message?: unknown } | unknown;
+      message?: unknown;
+    };
+
+    if (record.error && typeof record.error === 'object' && typeof (record.error as { message?: unknown }).message === 'string') {
+      return (record.error as { message: string }).message;
+    }
+
+    if (typeof record.message === 'string' && record.message.trim()) {
+      return record.message.trim();
+    }
+  }
+
+  if (typeof payload === 'string' && payload.trim()) {
+    return payload.trim().slice(0, 240);
+  }
+
+  return `El proveedor respondio HTTP ${status} al consultar /models`;
+}
+
 function toRecord(row: CustomProviderRow): CustomProviderRecord {
   return {
     id: row.id,
@@ -129,6 +192,64 @@ export function getDecryptedCustomProviderKey(id: string): string | null {
     iv: row.api_key_iv,
     tag: row.api_key_tag,
   });
+}
+
+export async function discoverCustomProviderModels(input: {
+  providerId?: string | null;
+  baseUrl?: string | null;
+  apiKey?: string | null;
+}): Promise<CustomModelConfig[]> {
+  const provider = input.providerId
+    ? (selectById.get({ $id: input.providerId }) as CustomProviderRow | null)
+    : null;
+
+  const baseUrl = (input.baseUrl ?? provider?.base_url ?? '').trim().replace(/\/+$/, '');
+  if (!baseUrl) {
+    throw new Error('Base URL es obligatoria para descubrir modelos');
+  }
+
+  const apiKey = input.apiKey?.trim() || (provider ? getDecryptedCustomProviderKey(provider.id) : null);
+  const headers = new Headers({ Accept: 'application/json' });
+  if (apiKey) {
+    headers.set('Authorization', `Bearer ${apiKey}`);
+  }
+
+  const response = await fetch(`${baseUrl}/models`, {
+    method: 'GET',
+    headers,
+  });
+
+  const contentType = response.headers.get('content-type') || '';
+  const payload = contentType.includes('application/json')
+    ? await response.json()
+    : await response.text();
+
+  if (!response.ok) {
+    throw new Error(getDiscoveryErrorMessage(response.status, payload));
+  }
+
+  const unique = new Set<string>();
+  const models = getModelItems(payload)
+    .map(getModelId)
+    .filter((id): id is string => Boolean(id))
+    .filter((id) => {
+      if (unique.has(id)) {
+        return false;
+      }
+      unique.add(id);
+      return true;
+    })
+    .map((id) => ({
+      id,
+      supportsTools: false,
+      supportsVision: false,
+    }));
+
+  if (models.length === 0) {
+    throw new Error('El endpoint /models no devolvio modelos utilizables');
+  }
+
+  return models;
 }
 
 export function createCustomProvider(input: {
