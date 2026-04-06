@@ -38,38 +38,62 @@ function normalizeCustomProviderProtocol(value: unknown): CustomProviderProtocol
   return 'openai';
 }
 
+function applyDiscoveryAuthHeaders(headers: Headers, protocol: CustomProviderProtocol, apiKey: string | null): void {
+  if (!apiKey) {
+    if (protocol === 'anthropic') {
+      headers.set('anthropic-version', '2023-06-01');
+    }
+    return;
+  }
+
+  if (protocol === 'openai') {
+    headers.set('Authorization', `Bearer ${apiKey}`);
+    return;
+  }
+
+  if (protocol === 'gemini') {
+    headers.set('Authorization', `Bearer ${apiKey}`);
+    headers.set('x-goog-api-key', apiKey);
+    return;
+  }
+
+  headers.set('anthropic-version', '2023-06-01');
+  headers.set('x-api-key', apiKey);
+}
+
+function normalizeModelIdForProtocol(protocol: CustomProviderProtocol, modelId: string): string {
+  const trimmed = modelId.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+
+  if (protocol === 'gemini') {
+    return trimmed.replace(/^models\//i, '');
+  }
+
+  return trimmed;
+}
+
 export interface CustomModelConfig {
   id: string;
   supportsTools: boolean;
   supportsVision: boolean;
-  inImagePool: boolean;
-  inVideoPool: boolean;
+  supportsImageGeneration: boolean;
+  supportsVideoGeneration: boolean;
 }
 
-export interface CustomProviderMediaModel {
+export type CustomMediaCategory = 'images' | 'videos';
+
+export interface CustomProviderMediaTarget {
   providerId: string;
-  providerName: string;
   providerSlug: string;
+  providerName: string;
   protocol: CustomProviderProtocol;
   baseUrl: string;
-  hasApiKey: boolean;
-  model: CustomModelConfig;
-}
-
-function normalizeCustomModelConfig(value: unknown): CustomModelConfig | null {
-  const id = getModelId(value);
-  if (!id) {
-    return null;
-  }
-
-  const record = value && typeof value === 'object' ? value as Record<string, unknown> : {};
-  return {
-    id,
-    supportsTools: record.supportsTools === true,
-    supportsVision: record.supportsVision === true,
-    inImagePool: record.inImagePool === true,
-    inVideoPool: record.inVideoPool === true,
-  };
+  apiKey: string | null;
+  modelId: string;
+  serviceName: string;
+  category: CustomMediaCategory;
 }
 
 interface CustomProviderRow {
@@ -164,25 +188,52 @@ function getDiscoveryErrorMessage(status: number, payload: unknown): string {
 }
 
 function toRecord(row: CustomProviderRow): CustomProviderRecord {
-  const rawModels = JSON.parse(row.models) as unknown;
-  const parsedModels = Array.isArray(rawModels)
-    ? rawModels
-        .map(normalizeCustomModelConfig)
-        .filter((model): model is CustomModelConfig => Boolean(model))
-    : [];
-
+  const protocol = normalizeCustomProviderProtocol(row.protocol);
   return {
     id: row.id,
     name: row.name,
     slug: row.slug,
-    protocol: normalizeCustomProviderProtocol(row.protocol),
+    protocol,
     baseUrl: row.base_url,
     hasApiKey: row.api_key_encrypted !== null,
-    models: parsedModels,
+    models: normalizeCustomModelConfigs(JSON.parse(row.models) as unknown).map((model) => ({
+      ...model,
+      id: normalizeModelIdForProtocol(protocol, model.id),
+    })),
     isActive: row.is_active === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function normalizeCustomModelConfig(input: unknown): CustomModelConfig | null {
+  if (!input || typeof input !== 'object') {
+    return null;
+  }
+
+  const record = input as Record<string, unknown>;
+  const id = typeof record.id === 'string' ? record.id.trim() : '';
+  if (!id) {
+    return null;
+  }
+
+  return {
+    id,
+    supportsTools: record.supportsTools === true,
+    supportsVision: record.supportsVision === true,
+    supportsImageGeneration: record.supportsImageGeneration === true,
+    supportsVideoGeneration: record.supportsVideoGeneration === true,
+  };
+}
+
+export function normalizeCustomModelConfigs(input: unknown): CustomModelConfig[] {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+
+  return input
+    .map(normalizeCustomModelConfig)
+    .filter((model): model is CustomModelConfig => Boolean(model));
 }
 
 export function slugify(value: string): string {
@@ -270,20 +321,7 @@ export async function discoverCustomProviderModels(input: {
   const apiKey = input.apiKey?.trim() || (provider ? getDecryptedCustomProviderKey(provider.id) : null);
   const headers = new Headers({ Accept: 'application/json' });
   let modelsUrl = `${baseUrl}/models`;
-  if (protocol === 'openai') {
-    if (apiKey) {
-      headers.set('Authorization', `Bearer ${apiKey}`);
-    }
-  } else if (protocol === 'gemini') {
-    if (apiKey) {
-      headers.set('x-goog-api-key', apiKey);
-    }
-  } else if (protocol === 'anthropic') {
-    headers.set('anthropic-version', '2023-06-01');
-    if (apiKey) {
-      headers.set('x-api-key', apiKey);
-    }
-  }
+  applyDiscoveryAuthHeaders(headers, protocol, apiKey);
 
   const response = await fetch(modelsUrl, {
     method: 'GET',
@@ -311,11 +349,11 @@ export async function discoverCustomProviderModels(input: {
       return true;
     })
     .map((id) => ({
-      id,
+      id: normalizeModelIdForProtocol(protocol, id),
       supportsTools: false,
       supportsVision: false,
-      inImagePool: false,
-      inVideoPool: false,
+      supportsImageGeneration: false,
+      supportsVideoGeneration: false,
     }));
 
   if (models.length === 0) {
@@ -364,7 +402,10 @@ export function createCustomProvider(input: {
     $apiKeyEncrypted: apiKeyEncrypted,
     $apiKeyIv: apiKeyIv,
     $apiKeyTag: apiKeyTag,
-    $models: JSON.stringify(input.models),
+    $models: JSON.stringify(input.models.map((model) => ({
+      ...model,
+      id: normalizeModelIdForProtocol(normalizeCustomProviderProtocol(input.protocol), model.id),
+    }))),
     $now: now,
   });
 
@@ -403,7 +444,15 @@ export function updateCustomProvider(
     $apiKeyIv: apiKeyIv,
     $apiKeyTag: apiKeyTag,
     $clearApiKey: clearApiKey,
-    $models: input.models !== undefined ? JSON.stringify(input.models) : null,
+    $models: input.models !== undefined
+      ? JSON.stringify(input.models.map((model) => ({
+          ...model,
+          id: normalizeModelIdForProtocol(
+            normalizeCustomProviderProtocol(input.protocol ?? getCustomProviderById(id)?.protocol ?? 'openai'),
+            model.id,
+          ),
+        })))
+      : null,
     $isActive: input.isActive !== undefined ? (input.isActive ? 1 : 0) : null,
     $now: Date.now(),
   });
@@ -420,19 +469,56 @@ export function deleteCustomProvider(id: string): boolean {
   return result.changes > 0;
 }
 
-export function listActiveCustomMediaModels(kind: 'images' | 'videos'): CustomProviderMediaModel[] {
-  const key = kind === 'images' ? 'inImagePool' : 'inVideoPool';
-  return listActiveCustomProviders().flatMap((provider) =>
-    provider.models
-      .filter((model) => model[key])
-      .map((model) => ({
+export function getCustomProviderMediaTargets(category: CustomMediaCategory): string[] {
+  const targets = new Set<string>();
+
+  for (const provider of listActiveCustomProviders()) {
+    for (const model of provider.models) {
+      const enabled = category === 'images' ? model.supportsImageGeneration : model.supportsVideoGeneration;
+      if (!enabled) {
+        continue;
+      }
+      targets.add(`${provider.slug}/${model.id}`);
+    }
+  }
+
+  return Array.from(targets).sort((left, right) => left.localeCompare(right));
+}
+
+export function resolveCustomProviderMediaTarget(
+  target: string,
+  category: CustomMediaCategory,
+): CustomProviderMediaTarget | null {
+  const normalizedTarget = target.trim();
+  if (!normalizedTarget) {
+    return null;
+  }
+
+  for (const provider of listActiveCustomProviders()) {
+    for (const model of provider.models) {
+      const enabled = category === 'images' ? model.supportsImageGeneration : model.supportsVideoGeneration;
+      if (!enabled) {
+        continue;
+      }
+
+      const serviceName = `${provider.slug}/${model.id}`;
+      if (serviceName !== normalizedTarget) {
+        continue;
+      }
+
+      return {
         providerId: provider.id,
-        providerName: provider.name,
         providerSlug: provider.slug,
+        providerName: provider.name,
         protocol: provider.protocol,
         baseUrl: provider.baseUrl,
-        hasApiKey: provider.hasApiKey,
-        model,
-      })),
-  );
+        apiKey: getDecryptedCustomProviderKey(provider.id),
+        modelId: model.id,
+        serviceName,
+        category,
+      };
+    }
+  }
+
+  return null;
 }

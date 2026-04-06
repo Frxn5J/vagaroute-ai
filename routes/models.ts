@@ -6,7 +6,9 @@ import { normalizeProviderId } from '../core/usageLimits';
 import {
   buildScopedModelTelemetry,
   errorResponse,
+  filterStatesByProjectPolicy,
   jsonResponse,
+  resolveProjectModelPolicy,
   resolveRequestMetricsScope,
   type RouteContext,
 } from './_shared';
@@ -23,12 +25,20 @@ export async function handleModels(
   if (req.method === 'GET' && pathname === '/v1/models') {
     const now = Date.now();
     const providerCooldownMap = new Map(getAllProviderStats().map((item) => [item.id, item]));
+    const projectPolicy = resolveProjectModelPolicy(auth, req);
+    const visibleStates = filterStatesByProjectPolicy(states.filter((state) => !state.disabled), projectPolicy);
     const virtualModels = [
-      { id: 'auto', object: 'model', created: Math.floor(now / 1000), owned_by: 'system', supports_tools: true, status: 'available' },
-      { id: 'img', object: 'model', created: Math.floor(now / 1000), owned_by: 'system', supports_tools: false, status: 'available' },
-      { id: 'tools', object: 'model', created: Math.floor(now / 1000), owned_by: 'system', supports_tools: true, status: 'available' },
-    ];
-    const data = states.filter((state) => !state.disabled).map((state) => ({
+      visibleStates.length > 0
+        ? { id: 'auto', object: 'model', created: Math.floor(now / 1000), owned_by: 'system', supports_tools: true, status: 'available' }
+        : null,
+      visibleStates.some((state) => state.service.supportsVision)
+        ? { id: 'img', object: 'model', created: Math.floor(now / 1000), owned_by: 'system', supports_tools: false, status: 'available' }
+        : null,
+      visibleStates.some((state) => state.service.supportsTools)
+        ? { id: 'tools', object: 'model', created: Math.floor(now / 1000), owned_by: 'system', supports_tools: true, status: 'available' }
+        : null,
+    ].filter(Boolean);
+    const data = visibleStates.map((state) => ({
       id: state.service.name,
       object: 'model',
       created: Math.floor(now / 1000),

@@ -1021,6 +1021,20 @@ tbody tr:hover td {
   font-size: 0.875rem;
 }
 
+.chat-image-wrap {
+  margin-top: 0.25rem;
+}
+
+.chat-image {
+  display: block;
+  max-width: min(100%, 360px);
+  width: 100%;
+  height: auto;
+  border-radius: calc(var(--radius) - 2px);
+  border: 1px solid var(--line-strong);
+  background: var(--bg-soft);
+}
+
 .bubble strong {
   display: block;
   font-size: 0.7rem;

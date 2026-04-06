@@ -19,8 +19,10 @@ import {
   jsonResponse,
   readJsonBody,
   recordServiceMetric,
+  resolveProjectModelPolicy,
   resolveCacheScopeKey,
   resolveUsage,
+  isModelAllowedByProjectPolicy,
   splitServiceName,
   type RouteContext,
 } from './_shared';
@@ -60,6 +62,7 @@ export async function handleChat(
   const forceTools = model === 'tools';
   const forceVision = model === 'img';
   const resolvedModel = !useAuto ? (resolveModelAlias(model) ?? model) : model;
+  const projectModelPolicy = resolveProjectModelPolicy(auth, req);
   const usageEstimate = estimateChatUsage(chatRequest);
   const cacheEligible = isChatCacheEligible(chatRequest, wantsStream);
   const cacheScopeKey = resolveCacheScopeKey(auth, req);
@@ -70,6 +73,14 @@ export async function handleChat(
         body: { ...chatRequest, model: String(resolvedModel || 'auto') },
       })
     : null;
+
+  if (!useAuto && !isModelAllowedByProjectPolicy(resolvedModel, projectModelPolicy)) {
+    return errorResponse(req, 403, `El modelo '${resolvedModel}' no esta habilitado para este proyecto`, 'project_model_forbidden');
+  }
+
+  if (useAuto && projectModelPolicy.mode === 'none') {
+    return errorResponse(req, 403, 'Este proyecto no tiene modelos habilitados', 'project_model_forbidden');
+  }
 
   // Cache HIT
   if (cacheKey) {
@@ -89,7 +100,6 @@ export async function handleChat(
         promptTokens: cached.promptTokens,
         completionTokens: cached.completionTokens,
         totalTokens: cached.totalTokens,
-        estimatedCostUsd: 0,
       });
       return jsonResponse(req, cached.response, cached.statusCode, {
         'X-Cache': 'HIT',
@@ -101,7 +111,13 @@ export async function handleChat(
   // Dispatch
   try {
     const { stream, serviceName } = useAuto
-      ? await tryServices(chatRequest, id, forceTools, forceVision)
+      ? await tryServices(
+          chatRequest,
+          id,
+          forceTools,
+          forceVision,
+          projectModelPolicy.mode === 'selected' ? projectModelPolicy.allowedModelIds : undefined,
+        )
       : await trySpecificService(resolvedModel, chatRequest, id);
 
     const meta = splitServiceName(serviceName);

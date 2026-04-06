@@ -35,7 +35,6 @@ export async function handleUsers(
         password: string;
         projectId?: string | null;
         monthlyRequestQuota?: number | null;
-        monthlyBudgetUsd?: number | null;
       }>(req);
       const result = await createUserWithDefaultKey(body);
       return jsonResponse(req, { ok: true, user: result.user, apiKey: result.defaultApiKey, rawApiKey: result.rawApiKey }, 201);
@@ -56,18 +55,15 @@ export async function handleUsers(
       const body = await readJsonBody<{
         isActive?: boolean;
         monthlyRequestQuota?: number | null;
-        monthlyBudgetUsd?: number | null;
         onboardingCompletedAt?: number | null;
       }>(req);
       if (typeof body.isActive === 'boolean') setUserActive(user.id, body.isActive);
       if (
         body.monthlyRequestQuota !== undefined ||
-        body.monthlyBudgetUsd !== undefined ||
         body.onboardingCompletedAt !== undefined
       ) {
         updateUserProductSettings(user.id, {
           monthlyRequestQuota: body.monthlyRequestQuota,
-          monthlyBudgetUsd: body.monthlyBudgetUsd,
           onboardingCompletedAt: body.onboardingCompletedAt,
         });
       }

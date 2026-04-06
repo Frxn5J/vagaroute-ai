@@ -19,7 +19,7 @@
 
 ## What is VagaRoute AI?
 
-VagaRoute AI is a **self-hosted AI gateway** that gives you a single OpenAI-compatible API endpoint (`/v1/chat/completions`) backed by 10+ LLM providers — prioritizing **free-tier models** first, with automatic failover, rate limiting, caching, cost tracking, and a full web dashboard.
+VagaRoute AI is a **self-hosted AI gateway** that gives you a single OpenAI-compatible API endpoint (`/v1/chat/completions`) backed by 10+ LLM providers — prioritizing **free-tier models** first, with automatic failover, rate limiting, caching, token tracking, and a full web dashboard.
 
 No Redis. No PostgreSQL. No external services. **One process, one SQLite database, one command to run.**
 
@@ -46,7 +46,8 @@ Your App  →  VagaRoute AI Gateway  →  Groq / Gemini / OpenRouter / Mistral /
 ### 🔌 Custom Providers (Bring Your Own)
 - **Multi-Protocol:** Connect OpenAI-compatible APIs plus Gemini API or Anthropic Messages endpoints directly from the dashboard.
 - **Full Control:** Configure Custom Base URLs, API Keys, and Models.
-- **Granular Features:** Toggle Tool/Vision support and decide per model if it joins the image or video generation pools.
+- **Granular Features:** Toggle Tool/Vision support plus image/video generation flags per custom model explicitly.
+- **Media Routing:** Marking a custom model as image or video generation exposes it to `/v1/images/generations` or `/v1/videos` without forcing it into the automatic chat pool.
 
 ### 🎭 Model Aliases (Seamless Compatibility)
 - **Drop-in Replacements:** Map legacy/external model names (like `gpt-4o` or `claude-3-5-sonnet`) to any real model in your pool.
@@ -80,7 +81,7 @@ Your App  →  VagaRoute AI Gateway  →  Groq / Gemini / OpenRouter / Mistral /
 ### 🔑 Access Control
 - **User accounts** with email + password login
 - **API keys** — create multiple keys per user with individual rate limits
-- **Projects** — group users and keys under projects with monthly budgets (USD) and request quotas
+- **Projects** — group users and keys under projects with monthly request quotas
 - **Admin / User roles** — full RBAC
 - **Invitation tokens** — invite teammates to projects via secure tokens
 - **Password reset** — built-in token-based password recovery
@@ -94,14 +95,12 @@ Your App  →  VagaRoute AI Gateway  →  Groq / Gemini / OpenRouter / Mistral /
 - Cache bypassed automatically for streaming, function-calling, or high-temperature requests
 
 ### 📊 Observability
-- **Cost estimation** in USD per request (chat, audio, images, embeddings)
 - **Token tracking** — prompt / completion / total tokens with monthly summaries and projections
-- **Provider-level metrics** — requests, errors, avg latency, total cost per provider
+- **Provider-level metrics** — requests, errors, avg latency, token totals per provider
 - **Model-level telemetry** — top models by usage
 - **Recent errors** — last 15 failed requests with error messages
 - **Usage summaries** per user and per project
-- **Spend projection** — estimated end-of-month spend based on current burn rate
-- **Dashboard alerts** — proactive warnings for provider cooldowns, budget overruns, and spend spikes
+- **Dashboard alerts** — proactive warnings for provider cooldowns, quota overruns, and usage spikes
 
 ### 🔒 Provider Key Management
 - Store encrypted provider API keys in the DB (AES-GCM, key derived from `ROUTER_MASTER_KEY`)
@@ -393,17 +392,16 @@ GET /health
 The built-in web dashboard (fully localized with built-in i18n support, including Spanish) is served at the root URL (`/`). It includes:
 
 - **Pool status** — all loaded models with availability, cooldown timers, tool/vision support
-- **Metrics** — requests, tokens, cost (USD) per provider and model
-- **Usage summaries** — per user and per project with quota/budget tracking
-- **Spend projection** — month-to-date + estimated end-of-month cost
+- **Metrics** — requests and tokens per provider and model
+- **Usage summaries** — per user and per project with quota tracking
 - **Recent errors** — last 15 failed requests with error context
-- **Alerts** — proactive warnings (provider down, budget over 80%, spend spikes)
+- **Alerts** — proactive warnings (provider down, quota over 80%, usage spikes)
 - **Cache stats** — hit rate, active entries, stores
-- **User management** — create, activate/deactivate users, set quotas and budgets
+- **User management** — create, activate/deactivate users, set quotas
 - **API Key management** — create, revoke, set rate limits
 - **Service Key management** — add provider API keys, set priority, monitor cooldown state
 - **Rate limit rules** — configure RPM/RPD/TPM/TPD per provider or model
-- **Project management** — create projects, invite members, set budgets
+- **Project management** — create projects, invite members, set quotas
 - **Custom Providers** — add, test, and manage external OpenAI-, Gemini-, or Anthropic-compatible APIs from the UI
 - **Model Aliases** — map standard model names (e.g., `gpt-4o`) to actual backend resources
 
@@ -416,7 +414,6 @@ bun-ai-api/
 ├── index.ts              # HTTP router — all API routes
 ├── core/
 │   ├── config.ts         # Environment config
-│   ├── costs.ts          # USD cost estimation per provider/model/type
 │   ├── db.ts             # SQLite schema, queries, migrations
 │   ├── pool.ts           # Service pool — loading, routing, failover logic
 │   ├── providerKeys.ts   # API key management with intelligent retry/rotation
@@ -475,10 +472,10 @@ bun-ai-api/
 | **Free-tier focus** | ✅ Core feature | ❌ | ❌ | ❌ | ❌ |
 | **External deps** | 🟢 None (SQLite) | 🔴 Redis + PG + Prisma | 🟡 Optional Redis | 🟢 Stateless | 🔴 Postgres + Redis |
 | **Response cache** | ✅ Memory + SQLite | ✅ Redis required | ✅ Semantic | ✅ Simple + Semantic | ✅ Semantic (Rust) |
-| **Cost tracking** | ✅ Built-in USD | ✅ Built-in | ✅ Built-in | ✅ Built-in | ✅ Built-in |
+| **Cost tracking** | ❌ | ✅ Built-in | ✅ Built-in | ✅ Built-in | ✅ Built-in |
 | **Token tracking** | ✅ Prompt/completion | ✅ | ✅ | ✅ | ✅ |
-| **Multi-tenancy** | ✅ Projects + budgets | ✅ Teams + budgets | ✅ Orgs + virtual keys | ✅ Workspaces | ✅ Organizations |
-| **Per-user budgets & quotas** | ✅ USD limit + request cap per user | ✅ | ❌ | ✅ | ❌ |
+| **Multi-tenancy** | ✅ Projects + quotas | ✅ Teams + budgets | ✅ Orgs + virtual keys | ✅ Workspaces | ✅ Organizations |
+| **Per-user quotas** | ✅ Request cap per user | ✅ | ❌ | ✅ | ❌ |
 | **Dashboard** | ✅ Built-in, role-scoped (admin/user) | ✅ Requires PG | ✅ Built-in | ✅ Built-in | ✅ Built-in |
 | **Image generation** | ✅ Pollinations + Qwen | 🟡 Proxy only | 🟡 Proxy only | 🟡 Proxy only | 🟡 Proxy only |
 | **Audio transcription** | ✅ Groq + Wit.ai (native) | 🟡 Proxy only | 🟡 Proxy only | 🟡 Proxy only | 🟡 Proxy only |
@@ -503,7 +500,7 @@ bun-ai-api/
 - You need **native image gen and audio transcription**, not a pass-through proxy
 - You want to add **any OpenAI-compatible API as a custom provider** from the dashboard — base URL, AES-encrypted key, per-model tool/vision flags — no config files
 - You want **fine-grained routing control** — manually override model tier priority from the UI, or pin specific models to tool-use routing via `AGENT_MODELS`
-- You need **per-user spend limits** — monthly USD budget and request quota, independent of project-level limits
+- You need **per-user request quotas** — independent of project-level limits
 - You want **RBAC that actually scales down** — admins see everything; regular users see only their own usage, keys, and projects with no data leakage
 - You want a **first-run onboarding wizard** that takes you from zero to operational in < 2 minutes with no external services
 

@@ -7,12 +7,12 @@ import {
 } from '../core/usageLimits';
 import { ensureProviderLimitAvailable } from '../core/providerLimits';
 import { getProviderKeyCandidates, withProviderKey } from '../core/providerKeys';
-import {
-  getDecryptedCustomProviderKey,
-  listActiveCustomMediaModels,
-  type CustomProviderMediaModel,
-} from '../core/customProviders';
 import { resolveModelAliasByCategory } from '../core/db';
+import {
+  resolveCustomProviderMediaTarget,
+  type CustomMediaCategory,
+  type CustomProviderMediaTarget,
+} from '../core/customProviders';
 import {
   buildProviderError,
   errorResponse,
@@ -31,69 +31,6 @@ type QwenMediaProvider = 'qwenchat';
 type AudioTranscriptionProvider = 'groq' | 'witai';
 
 const QWEN_API_BASE_URL = 'https://qwen.aikit.club/v1';
-
-function buildCustomProviderHeaders(provider: CustomProviderMediaModel): Headers {
-  const headers = new Headers({ Accept: 'application/json' });
-  const apiKey = getDecryptedCustomProviderKey(provider.providerId);
-  if (!apiKey) {
-    return headers;
-  }
-  if (provider.protocol === 'gemini') {
-    headers.set('x-goog-api-key', apiKey);
-  } else if (provider.protocol === 'anthropic') {
-    headers.set('x-api-key', apiKey);
-    headers.set('anthropic-version', '2023-06-01');
-  } else {
-    headers.set('Authorization', `Bearer ${apiKey}`);
-  }
-  return headers;
-}
-
-function normalizeCustomProviderBaseUrl(baseUrl: string): string {
-  return baseUrl.trim().replace(/\/+$/, '');
-}
-
-function normalizeCustomProviderHint(value: unknown): string | null {
-  const normalized = normalizeProviderId(typeof value === 'string' ? value : '');
-  return normalized || null;
-}
-
-function findCustomMediaProviderModel(kind: 'images' | 'videos', model: unknown, providerHint: unknown): CustomProviderMediaModel | null {
-  const resolvedModel = resolveMultimediaModel(model, kind);
-  const requestedModel = normalizeRequestedModel(resolvedModel);
-  const normalizedProviderHint = normalizeCustomProviderHint(providerHint);
-  const candidates = listActiveCustomMediaModels(kind);
-
-  if (requestedModel) {
-    const matched = candidates.find((item) => `${item.providerSlug}/${item.model.id}` === requestedModel || item.model.id === requestedModel);
-    if (matched && (!normalizedProviderHint || normalizeProviderId(matched.providerSlug) === normalizedProviderHint)) {
-      return matched;
-    }
-  }
-
-  if (normalizedProviderHint) {
-    return candidates.find((item) => normalizeProviderId(item.providerSlug) === normalizedProviderHint) ?? null;
-  }
-
-  return null;
-}
-
-async function requestCustomProviderJson<T>(provider: CustomProviderMediaModel, path: string, payload: unknown): Promise<T> {
-  const headers = buildCustomProviderHeaders(provider);
-  headers.set('Content-Type', 'application/json');
-
-  const response = await fetch(`${normalizeCustomProviderBaseUrl(provider.baseUrl)}${path}`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(payload),
-  });
-
-  if (!response.ok) {
-    throw buildProviderError(response.status, await response.text(), response.headers);
-  }
-
-  return await response.json() as T;
-}
 
 function normalizeRequestedModel(value: unknown): string | null {
   if (typeof value !== 'string' || !value.trim()) {
@@ -295,6 +232,70 @@ async function requestQwenJson<T>(path: string, payload: unknown): Promise<T> {
   });
 }
 
+function readCustomMediaTarget(model: unknown, category: CustomMediaCategory): CustomProviderMediaTarget | null {
+  const resolvedModel = resolveMultimediaModel(model, category);
+  if (!resolvedModel) {
+    return null;
+  }
+  return resolveCustomProviderMediaTarget(resolvedModel, category);
+}
+
+function applyCustomProviderAuth(headers: Headers, target: CustomProviderMediaTarget): void {
+  if (target.protocol === 'gemini') {
+    if (target.apiKey) {
+      headers.set('Authorization', `Bearer ${target.apiKey}`);
+      headers.set('x-goog-api-key', target.apiKey);
+    }
+    return;
+  }
+
+  if (target.protocol === 'anthropic') {
+    headers.set('anthropic-version', '2023-06-01');
+    if (target.apiKey) {
+      headers.set('x-api-key', target.apiKey);
+    }
+    return;
+  }
+
+  if (target.apiKey) {
+    headers.set('Authorization', `Bearer ${target.apiKey}`);
+  }
+}
+
+async function requestCustomProviderMediaJson<T>(
+  target: CustomProviderMediaTarget,
+  path: '/images/generations' | '/videos/generations',
+  payload: Record<string, unknown>,
+): Promise<T> {
+  const headers = new Headers({
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+  });
+  applyCustomProviderAuth(headers, target);
+
+  const response = await fetch(`${target.baseUrl.replace(/\/+$/, '')}${path}`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(payload),
+  });
+
+  const contentType = response.headers.get('content-type') || '';
+  const responsePayload = contentType.includes('application/json')
+    ? await response.json()
+    : await response.text();
+
+  if (!response.ok) {
+    const message = typeof responsePayload === 'string'
+      ? responsePayload.slice(0, 300)
+      : buildProviderError(response.status, JSON.stringify(responsePayload), response.headers).message;
+    throw Object.assign(new Error(message || `El proveedor multimedia respondio HTTP ${response.status}`), {
+      httpStatus: response.status,
+    });
+  }
+
+  return responsePayload as T;
+}
+
 async function requestQwenFormData<T>(path: string, payload: unknown): Promise<T> {
   return await withProviderKey('qwenchat', async ({ key }) => {
     const response = await fetch(`${QWEN_API_BASE_URL}${path}`, {
@@ -419,9 +420,8 @@ export async function handleMedia(
   // ── Image generation ──────────────────────────────────────────────────────
 
   if (req.method === 'POST' && (pathname === '/v1/images/generations' || pathname === '/v1/images')) {
-    let imageProvider: ImageGenerationProvider = 'pollinations';
+    let imageProvider = 'pollinations';
     let imageModel: string | null = null;
-    let customImageProvider: CustomProviderMediaModel | null = null;
 
     try {
       const body = await readJsonBody<{
@@ -437,28 +437,32 @@ export async function handleMedia(
       if (!body.prompt) throw new Error("Falta el parametro 'prompt' para generar la imagen");
 
       const usageEstimate = buildUsageEstimate({ requests: 1 });
-      customImageProvider = findCustomMediaProviderModel('images', body.model, body.provider);
+      const customImageTarget = readCustomMediaTarget(body.model, 'images');
+      if (customImageTarget) {
+        imageProvider = customImageTarget.providerSlug;
+        imageModel = customImageTarget.serviceName;
+        const payload: Record<string, unknown> = {
+          prompt: body.prompt,
+          model: customImageTarget.modelId,
+          n: body.n || 1,
+          response_format: body.response_format || 'url',
+        };
+        if (typeof body.size === 'string' && body.size.trim()) {
+          payload.size = body.size.trim();
+        }
+        if (typeof body.quality === 'string' && body.quality.trim()) {
+          payload.quality = body.quality.trim();
+        }
 
-      if (customImageProvider) {
-        imageModel = `${customImageProvider.providerSlug}/${customImageProvider.model.id}`;
-        const providerId = normalizeProviderId(customImageProvider.providerSlug);
-        ensureProviderLimitAvailable(providerId, usageEstimate);
-        const json = await requestCustomProviderJson<{ data?: Array<Record<string, unknown>> }>(
-          customImageProvider,
+        const json = await requestCustomProviderMediaJson<{ data?: Array<Record<string, unknown>> }>(
+          customImageTarget,
           '/images/generations',
-          {
-            prompt: body.prompt,
-            model: customImageProvider.model.id,
-            n: body.n || 1,
-            size: body.size || '1024x1024',
-            quality: body.quality,
-            response_format: body.response_format,
-          },
+          payload,
         );
         recordServiceMetric(req, auth, ip, {
           requestType: 'images',
-          provider: providerId,
-          model: imageModel,
+          provider: customImageTarget.providerSlug,
+          model: customImageTarget.serviceName,
           statusCode: 200,
           durationMs: Date.now() - startedAt,
           totalTokens: usageEstimate.totalTokens,
@@ -559,7 +563,7 @@ export async function handleMedia(
       const status = getHttpStatusFromError(err, 400);
       recordServiceMetric(req, auth, ip, {
         requestType: 'images',
-        provider: customImageProvider ? normalizeProviderId(customImageProvider.providerSlug) : imageProvider,
+        provider: imageProvider,
         model: imageModel,
         statusCode: status,
         durationMs: Date.now() - startedAt,
@@ -668,8 +672,8 @@ export async function handleMedia(
   // ── Video generation ──────────────────────────────────────────────────────
 
   if (req.method === 'POST' && (pathname === '/v1/videos/generations' || pathname === '/v1/videos')) {
+    let videoProvider = 'qwenchat';
     let videoModel: string | null = 'video-generation';
-    let customVideoProvider: CustomProviderMediaModel | null = null;
 
     try {
       const body = await readJsonBody<{
@@ -686,20 +690,27 @@ export async function handleMedia(
       }
 
       const usageEstimate = buildUsageEstimate({ requests: 1 });
-      customVideoProvider = findCustomMediaProviderModel('videos', body.model, body.provider);
-      if (customVideoProvider) {
-        videoModel = `${customVideoProvider.providerSlug}/${customVideoProvider.model.id}`;
-        const providerId = normalizeProviderId(customVideoProvider.providerSlug);
-        ensureProviderLimitAvailable(providerId, usageEstimate);
-        const json = await requestCustomProviderJson(customVideoProvider, '/videos/generations', {
+      const customVideoTarget = readCustomMediaTarget(body.model, 'videos');
+      if (customVideoTarget) {
+        videoProvider = customVideoTarget.providerSlug;
+        videoModel = customVideoTarget.serviceName;
+        const payload: Record<string, unknown> = {
           prompt: body.prompt,
-          model: customVideoProvider.model.id,
-          size: body.size,
-        });
+          model: customVideoTarget.modelId,
+        };
+        if (typeof body.size === 'string' && body.size.trim()) {
+          payload.size = body.size.trim();
+        }
+
+        const json = await requestCustomProviderMediaJson(
+          customVideoTarget,
+          '/videos/generations',
+          payload,
+        );
         recordServiceMetric(req, auth, ip, {
           requestType: 'videos',
-          provider: providerId,
-          model: videoModel,
+          provider: customVideoTarget.providerSlug,
+          model: customVideoTarget.serviceName,
           statusCode: 200,
           durationMs: Date.now() - startedAt,
           totalTokens: usageEstimate.totalTokens,
@@ -723,11 +734,11 @@ export async function handleMedia(
       }
 
       const json = await requestQwenJson('/videos/generations', payload);
-      recordServiceMetric(req, auth, ip, {
-        requestType: 'videos',
-        provider: 'qwenchat',
-        model: videoModel,
-        statusCode: 200,
+        recordServiceMetric(req, auth, ip, {
+          requestType: 'videos',
+          provider: videoProvider,
+          model: videoModel,
+          statusCode: 200,
         durationMs: Date.now() - startedAt,
         totalTokens: usageEstimate.totalTokens,
       });
@@ -735,10 +746,10 @@ export async function handleMedia(
     } catch (err) {
       const message = (err as { message?: string })?.message ?? 'Video generation failed';
       const status = getHttpStatusFromError(err, 400);
-      recordServiceMetric(req, auth, ip, {
-        requestType: 'videos',
-        provider: customVideoProvider ? normalizeProviderId(customVideoProvider.providerSlug) : 'qwenchat',
-        model: videoModel,
+        recordServiceMetric(req, auth, ip, {
+          requestType: 'videos',
+          provider: videoProvider,
+          model: videoModel,
         statusCode: status,
         durationMs: Date.now() - startedAt,
         errorMessage: message,

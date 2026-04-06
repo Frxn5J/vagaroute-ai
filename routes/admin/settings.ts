@@ -7,7 +7,6 @@ import {
   getDashboardMetrics,
   getProjectUsageSummaries,
   getRecentErrors,
-  getSpendSummary,
   getTokenSummary,
   getUserUsageSummaries,
   listAllApiKeys,
@@ -100,7 +99,6 @@ function buildDashboardPayload(auth: AuthContext) {
   const now = Date.now();
   const { scope: metricsScope, visibleProjects } = resolveRequestMetricsScope(auth);
   const metrics = getDashboardMetrics(metricsScope);
-  const spend = getSpendSummary(metricsScope);
   const tokens = getTokenSummary(metricsScope);
   const providerStats = getAllProviderStats();
   const providerCooldownMap = new Map(providerStats.map((item) => [item.id, item]));
@@ -175,7 +173,6 @@ function buildDashboardPayload(auth: AuthContext) {
       : { providerRules: [], modelRules: [] },
     metrics,
     modelTelemetry,
-    spend,
     tokens,
     projects: visibleProjects,
     invitations: isAdmin(auth) ? listInvitationTokens() : [],

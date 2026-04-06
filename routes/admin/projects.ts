@@ -34,14 +34,16 @@ export async function handleProjects(
       const body = await readJsonBody<{
         name: string;
         description?: string | null;
-        budgetMonthlyUsd?: number | null;
+        modelAccessMode?: 'all' | 'selected' | 'none';
+        allowedModelIds?: string[];
         requestQuotaMonthly?: number | null;
       }>(req);
       const project = createProject({
         id: `prj_${randomToken(10)}`,
         name: body.name,
         description: body.description,
-        budgetMonthlyUsd: body.budgetMonthlyUsd,
+        modelAccessMode: body.modelAccessMode,
+        allowedModelIds: body.allowedModelIds,
         requestQuotaMonthly: body.requestQuotaMonthly,
         ownerUserId: auth.user.id,
       });
@@ -63,7 +65,8 @@ export async function handleProjects(
       const body = await readJsonBody<{
         name?: string;
         description?: string | null;
-        budgetMonthlyUsd?: number | null;
+        modelAccessMode?: 'all' | 'selected' | 'none';
+        allowedModelIds?: string[];
         requestQuotaMonthly?: number | null;
         isActive?: boolean;
       }>(req);

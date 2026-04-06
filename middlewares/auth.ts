@@ -241,7 +241,6 @@ export async function createUserWithDefaultKey(input: {
   projectId?: string | null;
   projectRole?: 'owner' | 'member';
   monthlyRequestQuota?: number | null;
-  monthlyBudgetUsd?: number | null;
 }) {
   validateIdentityFields(input.name, input.email, input.password);
   const passwordHash = await Bun.password.hash(input.password);
@@ -255,7 +254,6 @@ export async function createUserWithDefaultKey(input: {
 
   updateUserProductSettings(user.id, {
     monthlyRequestQuota: input.monthlyRequestQuota ?? null,
-    monthlyBudgetUsd: input.monthlyBudgetUsd ?? null,
   });
 
   const settings = getAppSettings();
@@ -273,7 +271,6 @@ export async function createUserWithDefaultKey(input: {
     user: {
       ...user,
       monthlyRequestQuota: input.monthlyRequestQuota ?? null,
-      monthlyBudgetUsd: input.monthlyBudgetUsd ?? null,
     },
     defaultApiKey: defaultApiKey.record,
     rawApiKey: defaultApiKey.rawKey,
@@ -426,7 +423,6 @@ export async function authenticateRequest(req: Request): Promise<AuthContext | n
         role: 'admin',
         isActive: true,
         monthlyRequestQuota: null,
-        monthlyBudgetUsd: null,
         onboardingCompletedAt: null,
         createdAt: 0,
         updatedAt: 0,

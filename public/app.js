@@ -4,6 +4,16 @@ function createEmptyCustomProviderDraft() {
   return { name: '', protocol: 'openai', baseUrl: '', apiKey: '', models: [] };
 }
 
+function createEmptyCustomProviderModel() {
+  return {
+    id: '',
+    supportsTools: false,
+    supportsVision: false,
+    supportsImageGeneration: false,
+    supportsVideoGeneration: false,
+  };
+}
+
 function getCustomProviderProtocolOptions() {
   return [
     { value: 'openai', label: 'OpenAI compatible' },
@@ -244,11 +254,11 @@ function getSettingsGuideContent(pageId = state.settingsPage) {
     projects: {
       eyebrow: 'Tutorial rapido',
       title: 'Como gestionar proyectos y cuotas',
-      intro: 'Esta pagina concentra presupuestos, invitaciones temporales y seguimiento de consumo por proyecto.',
+      intro: 'Esta pagina concentra cuotas, invitaciones temporales y seguimiento de consumo por proyecto.',
       items: [
         {
           title: 'Crear proyecto',
-          text: 'Define presupuesto mensual y cuota de requests para detectar consumo alto cuanto antes.',
+          text: 'Define cuota mensual de requests para detectar consumo alto cuanto antes.',
         },
         {
           title: 'Invitaciones temporales',
@@ -256,7 +266,7 @@ function getSettingsGuideContent(pageId = state.settingsPage) {
         },
         {
           title: 'Alertas de consumo',
-          text: 'La vista cruza requests y costo estimado para priorizar equipos o clientes con mas riesgo.',
+          text: 'La vista cruza requests y tokens para priorizar equipos o clientes con mas riesgo.',
         },
       ],
     },
@@ -290,7 +300,7 @@ function getSettingsGuideContent(pageId = state.settingsPage) {
         },
         {
           title: 'RPM, RPD, TPM y TPD',
-          text: 'Controlan requests o tokens por minuto y por dia para evitar bloqueos o costos inesperados.',
+          text: 'Controlan requests o tokens por minuto y por dia para evitar bloqueos o saturacion inesperada.',
         },
         {
           title: 'ASH y ASD',
@@ -372,6 +382,47 @@ function escapeHtml(value) {
     .replaceAll('"', '&quot;');
 }
 
+function normalizeChatContent(value) {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => {
+        if (typeof item === 'string') return item;
+        if (item && typeof item === 'object' && typeof item.text === 'string') return item.text;
+        return JSON.stringify(item);
+      })
+      .join('\n');
+  }
+  return String(value ?? '');
+}
+
+function isBase64ImageDataUrl(value) {
+  return /^data:image\/[a-zA-Z0-9+.-]+;base64,[A-Za-z0-9+/=\s]+$/.test(value.trim());
+}
+
+function renderChatMessageContent(value) {
+  const content = normalizeChatContent(value);
+  const trimmed = content.trim();
+
+  if (isBase64ImageDataUrl(trimmed)) {
+    return `<div class="chat-image-wrap"><img class="chat-image" src="${trimmed}" alt="Imagen generada por el chat" /></div>`;
+  }
+
+  const dataUrlPattern = /(data:image\/[a-zA-Z0-9+.-]+;base64,[A-Za-z0-9+/=\s]+)/g;
+  const parts = content.split(dataUrlPattern);
+
+  return parts
+    .filter((part) => part)
+    .map((part) => {
+      const segment = part.trim();
+      if (isBase64ImageDataUrl(segment)) {
+        return `<div class="chat-image-wrap"><img class="chat-image" src="${segment}" alt="Imagen generada por el chat" /></div>`;
+      }
+      return `<div>${escapeHtml(part)}</div>`;
+    })
+    .join('');
+}
+
 function formatProviderLabel(provider) {
   const normalized = normalizeProviderId(provider);
   const labels = {
@@ -444,15 +495,6 @@ function renderServiceKeyRows(serviceKeys) {
       <td>${renderServiceKeyStateCell(item)}</td>
     </tr>
   `).join('') || '<tr><td colspan="6">Sin service keys registradas.</td></tr>';
-}
-
-function formatCurrency(value) {
-  return new Intl.NumberFormat('es-MX', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(Number(value || 0));
 }
 
 function formatUsageStatusLabel(status) {
@@ -842,6 +884,25 @@ const PLAYGROUND_MODEL_GROUPS = {
   ],
 };
 
+function getDashboardAliasCategory(categoryId) {
+  const categories = Array.isArray(state.dashboard?.modelAliasCategories) ? state.dashboard.modelAliasCategories : [];
+  return categories.find((category) => category.id === categoryId) || null;
+}
+
+function uniqueOptionList(values) {
+  const seen = new Set();
+  const options = [];
+  for (const value of values || []) {
+    const id = String(value || '').trim();
+    if (!id || seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    options.push({ id, label: id });
+  }
+  return options;
+}
+
 function playgroundSupportsModelSelection(key = state.currentPlayground) {
   return ['chat', 'images', 'imageEdit', 'videos'].includes(key);
 }
@@ -879,6 +940,8 @@ function getPlaygroundModelGroups(key = state.currentPlayground) {
   }
 
   const models = Array.isArray(state.dashboard?.pool?.models) ? state.dashboard.pool.models : [];
+  const aliasCategory = getDashboardAliasCategory(key === 'imageEdit' ? 'imageEdit' : key);
+  const aliasTargets = uniqueOptionList(aliasCategory?.targets || []);
   const grouped = key === 'chat'
     ? [
         ...PLAYGROUND_MODEL_GROUPS.chat,
@@ -898,8 +961,22 @@ function getPlaygroundModelGroups(key = state.currentPlayground) {
           label: 'Pago',
           options: models.filter((model) => model.paidOnly).map((model) => ({ id: model.id, label: model.id })),
         },
+        {
+          label: 'Aliases de chat',
+          options: uniqueOptionList((getDashboardAliasCategory('chat')?.targets || []).filter((id) => !models.some((model) => model.id === id))),
+        },
       ]
-    : (PLAYGROUND_MODEL_GROUPS[key] || []);
+    : [
+        ...(PLAYGROUND_MODEL_GROUPS[key] || []),
+        {
+          label: key === 'images'
+            ? 'Targets disponibles · Imágenes'
+            : key === 'imageEdit'
+              ? 'Targets disponibles · Edición'
+              : 'Targets disponibles · Videos',
+          options: aliasTargets,
+        },
+      ];
 
   const currentValue = getPlaygroundModelValue(key);
   const knownIds = new Set(grouped.flatMap((group) => group.options.map((option) => option.id)));
@@ -1062,6 +1139,33 @@ function getLimitPayloadFromFormData(formData) {
     ash: parseNullableNumber(formData.get('ash')),
     asd: parseNullableNumber(formData.get('asd')),
   };
+}
+
+function getMultiValueFormEntries(formData, key) {
+  return formData.getAll(key)
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+}
+
+function renderProjectModelPicker(selectedModelIds, availableModels) {
+  if (!availableModels.length) {
+    return '<div class="muted">No hay modelos cargados en el pool.</div>';
+  }
+
+  const selected = new Set(selectedModelIds || []);
+  return `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:0.5rem;max-height:220px;overflow:auto;padding:0.75rem;border:1px solid var(--border-color);border-radius:12px;background:rgba(255,255,255,0.02);">
+      ${availableModels.map((model) => `
+        <label style="display:flex;gap:0.55rem;align-items:flex-start;">
+          <input type="checkbox" name="allowedModelIds" value="${escapeHtml(model.id)}" ${selected.has(model.id) ? 'checked' : ''} />
+          <span>
+            <strong style="display:block;">${escapeHtml(model.id)}</strong>
+            <span class="muted" style="display:block;">${escapeHtml(model.provider)}${model.supportsTools ? ' · tools' : ''}${model.supportsVision ? ' · vision' : ''}</span>
+          </span>
+        </label>
+      `).join('')}
+    </div>
+  `;
 }
 
 function getPlaygroundExamples() {
@@ -1746,7 +1850,7 @@ function renderOverview() {
     <section class="grid-2">
       <article class="panel">
         <h3>Cache de respuestas</h3>
-        <p class="muted">Reduce latencia y costo en chat no-stream cuando la solicitud es repetible.</p>
+        <p class="muted">Reduce latencia y consumo repetido en chat no-stream cuando la solicitud es repetible.</p>
         <div class="grid-3">
           <article class="panel" style="padding: 0.9rem;">
             <span class="muted">Backend</span>
@@ -1840,22 +1944,22 @@ function renderChat() {
         </div>
         <label style="min-width: 220px;">
           Modelo
-          <select id="chat-model-select">
+          <select id="chat-model-select" name="model" data-action="chat-model">
             ${modelOptions.map((item) => `<option value="${escapeHtml(item.id)}" ${state.chatModel === item.id ? 'selected' : ''}>${escapeHtml(item.label)}</option>`).join('')}
           </select>
         </label>
       </div>
-      <div class="chat-log">
+      <div class="chat-log" id="chat-log">
         ${state.chatMessages.map((message) => `
           <div class="bubble ${escapeHtml(message.role)}">
             <strong>${message.role === 'assistant' ? 'Router' : message.role === 'user' ? 'Tu' : 'Sistema'}</strong>
-            <div>${escapeHtml(message.content)}</div>
+            <div>${renderChatMessageContent(message.content)}</div>
           </div>
         `).join('')}
       </div>
       <form data-form="chat">
         <label>Mensaje
-          <textarea name="message" placeholder="Escribe aqui para probar /v1/chat/completions" required>${escapeHtml(state.chatDraft)}</textarea>
+          <textarea name="message" data-action="chat-draft" placeholder="Escribe aqui para probar /v1/chat/completions" required>${escapeHtml(state.chatDraft)}</textarea>
         </label>
         <div class="button-row">
           <button class="primary-button" type="submit">${state.busy ? 'Enviando...' : 'Enviar al router'}</button>
@@ -1864,6 +1968,15 @@ function renderChat() {
       </form>
     </section>
   `;
+}
+
+function scrollChatToBottom() {
+  requestAnimationFrame(() => {
+    const chatLog = document.querySelector('#chat-log');
+    if (chatLog instanceof HTMLElement) {
+      chatLog.scrollTop = chatLog.scrollHeight;
+    }
+  });
 }
 
 function renderPlayground() {
@@ -2359,6 +2472,7 @@ function renderSettings() {
   const providerRuleMap = getProviderRateLimitMap();
   const modelRules = dashboard.rateLimits?.modelRules || [];
   const availableModels = (dashboard.pool?.models || []).map((item) => item.id);
+  const availableModelIds = availableModels;
   const defaultModelId = availableModels[0] || '';
 
   return `
@@ -2535,7 +2649,7 @@ function renderSettings() {
             <form data-form="update-model-limit">
               <label>Modelo
                 <select name="modelId">
-                  ${availableModels.map((modelId) => `<option value="${escapeHtml(modelId)}">${escapeHtml(modelId)}</option>`).join('')}
+                  ${availableModelIds.map((modelId) => `<option value="${escapeHtml(modelId)}">${escapeHtml(modelId)}</option>`).join('')}
                 </select>
               </label>
               ${renderLimitFields(createEmptyLimitRule(defaultModelId, defaultModelId.split('/')[0] || null))}
@@ -2685,11 +2799,12 @@ function mergeDiscoveredCustomProviderModels(existingModels, discoveredModels) {
 
     const current = existingMap.get(id);
     merged.push(current || {
+      ...createEmptyCustomProviderModel(),
       id,
       supportsTools: Boolean(model?.supportsTools),
       supportsVision: Boolean(model?.supportsVision),
-      inImagePool: Boolean(model?.inImagePool),
-      inVideoPool: Boolean(model?.inVideoPool),
+      supportsImageGeneration: Boolean(model?.supportsImageGeneration),
+      supportsVideoGeneration: Boolean(model?.supportsVideoGeneration),
     });
     existingMap.delete(id);
   }
@@ -2769,10 +2884,10 @@ function renderModelsBuilder(models, scope, protocol = 'openai') {
           data-action="cp-model-field"
           data-scope="${escapeHtml(scope)}"
           data-index="${index}"
-          data-field="inImagePool"
-          ${model.inImagePool ? 'checked' : ''}
+          data-field="supportsImageGeneration"
+          ${model.supportsImageGeneration ? 'checked' : ''}
         />
-        Img pool
+        Img
       </label>
       <label class="cp-check">
         <input
@@ -2780,10 +2895,10 @@ function renderModelsBuilder(models, scope, protocol = 'openai') {
           data-action="cp-model-field"
           data-scope="${escapeHtml(scope)}"
           data-index="${index}"
-          data-field="inVideoPool"
-          ${model.inVideoPool ? 'checked' : ''}
+          data-field="supportsVideoGeneration"
+          ${model.supportsVideoGeneration ? 'checked' : ''}
         />
-        Video pool
+        Video
       </label>
       <button
         class="ghost-button"
@@ -2806,6 +2921,7 @@ function renderModelsBuilder(models, scope, protocol = 'openai') {
           + Agregar modelo
         </button>
       </div>
+      <p class="muted" style="margin: 0 0 0.6rem; font-size: 0.78rem;">Marca <strong>Img</strong> o <strong>Video</strong> para habilitar el modelo en <code>/v1/images/generations</code> o <code>/v1/videos</code> usando el nombre ${scope === 'edit' ? '<code>slug/modelo</code>' : 'del provider/modelo al guardar'}.</p>
       ${rows || '<div class="empty-state" style="padding: 0.875rem; text-align: left;">Agrega al menos un modelo para habilitar el proveedor.</div>'}
     </div>
   `;
@@ -2960,8 +3076,8 @@ function renderSettingsCustomProviders() {
                         ${escapeHtml(model.id)}
                         ${model.supportsTools ? '<span title="Tools">⚙</span>' : ''}
                         ${model.supportsVision ? '<span title="Vision">👁</span>' : ''}
-                        ${model.inImagePool ? '<span title="Imagenes">🖼</span>' : ''}
-                        ${model.inVideoPool ? '<span title="Videos">🎬</span>' : ''}
+                        ${model.supportsImageGeneration ? '<span title="Imagen">🖼</span>' : ''}
+                        ${model.supportsVideoGeneration ? '<span title="Video">🎬</span>' : ''}
                       </span>
                     `).join('')}
                   </div>
@@ -3177,8 +3293,9 @@ function renderSettingsMultiPage() {
   const projectUsage = dashboard.projectUsage || [];
   const providerRuleMap = getProviderRateLimitMap();
   const modelRules = dashboard.rateLimits?.modelRules || [];
-  const availableModels = (dashboard.pool?.models || []).map((item) => item.id);
-  const defaultModelId = availableModels[0] || '';
+  const availableModels = dashboard.pool?.models || [];
+  const availableModelIds = availableModels.map((item) => item.id);
+  const defaultModelId = availableModelIds[0] || '';
   const projectNameById = new Map(projects.map((project) => [project.id, project.name]));
   const projectUsageById = new Map(projectUsage.map((summary) => [summary.id, summary]));
 
@@ -3323,9 +3440,6 @@ function renderSettingsMultiPage() {
             <label>Cuota mensual de requests
               <input name="monthlyRequestQuota" type="number" min="0" placeholder="1000" />
             </label>
-            <label>Presupuesto mensual estimado (USD)
-              <input name="monthlyBudgetUsd" type="number" min="0" step="0.01" placeholder="25.00" />
-            </label>
             <button class="secondary-button" type="submit">Crear usuario sin admin</button>
           </form>
         </article>
@@ -3358,7 +3472,6 @@ function renderSettingsMultiPage() {
                       <form class="inline-form" data-form="update-user-product">
                         <input type="hidden" name="id" value="${escapeHtml(user.id)}" />
                         <input type="number" name="monthlyRequestQuota" min="0" value="${escapeHtml(user.monthlyRequestQuota ?? '')}" placeholder="Req/mes" style="max-width: 96px;" />
-                        <input type="number" name="monthlyBudgetUsd" min="0" step="0.01" value="${escapeHtml(user.monthlyBudgetUsd ?? '')}" placeholder="USD/mes" style="max-width: 96px;" />
                         <button class="ghost-button" type="submit">Guardar</button>
                       </form>
                     </td>
@@ -3407,9 +3520,17 @@ function renderSettingsMultiPage() {
             <label>Cuota mensual de requests
               <input name="requestQuotaMonthly" type="number" min="0" placeholder="5000" />
             </label>
-            <label>Presupuesto mensual estimado (USD)
-              <input name="budgetMonthlyUsd" type="number" min="0" step="0.01" placeholder="150.00" />
+            <label>Disponibilidad de modelos
+              <select name="modelAccessMode">
+                <option value="all">Todos los modelos del pool</option>
+                <option value="selected">Solo los modelos seleccionados</option>
+                <option value="none">Ningun modelo</option>
+              </select>
             </label>
+            <div>
+              <div class="muted" style="margin-bottom:0.5rem;">Si eliges "solo seleccionados", estas casillas definen la allowlist del proyecto.</div>
+              ${renderProjectModelPicker([], availableModels)}
+            </div>
             <button class="primary-button" type="submit">Crear proyecto</button>
           </form>
         </article>
@@ -3442,12 +3563,12 @@ function renderSettingsMultiPage() {
       </section>
 
       <section class="panel">
-        <div class="row-between">
-          <div>
-            <h3>Proyectos activos</h3>
-            <p class="muted">Presupuesto, cuota y salud de consumo por proyecto.</p>
+          <div class="row-between">
+            <div>
+              <h3>Proyectos activos</h3>
+              <p class="muted">Cuota y salud de consumo por proyecto.</p>
+            </div>
           </div>
-        </div>
         <div class="table-wrap">
           <table>
             <thead>
@@ -3466,17 +3587,25 @@ function renderSettingsMultiPage() {
                     <td>
                       <strong>${escapeHtml(project.name)}</strong>
                       <div class="muted">${escapeHtml(project.slug)}</div>
+                      <div class="muted">${project.modelAccessMode === 'all' ? 'Modelos: todos' : project.modelAccessMode === 'none' ? 'Modelos: ninguno' : `Modelos: ${escapeHtml(String(project.allowedModelIds?.length || 0))} seleccionados`}</div>
                     </td>
                     <td>
                       <div>${formatNumber(summary?.requestCount || 0)} req</div>
                       <div class="muted">${formatTokenCount(summary?.totalTokens || 0)}</div>
                     </td>
                     <td>
-                      <form class="inline-form" data-form="update-project">
+                      <form data-form="update-project">
                         <input type="hidden" name="id" value="${escapeHtml(project.id)}" />
-                        <input type="text" name="name" value="${escapeHtml(project.name)}" placeholder="Nombre" style="max-width: 140px;" />
-                        <input type="number" name="requestQuotaMonthly" min="0" value="${escapeHtml(project.requestQuotaMonthly ?? '')}" placeholder="Req/mes" style="max-width: 92px;" />
-                        <input type="number" name="budgetMonthlyUsd" min="0" step="0.01" value="${escapeHtml(project.budgetMonthlyUsd ?? '')}" placeholder="USD/mes" style="max-width: 92px;" />
+                        <div style="display:grid;gap:0.5rem;">
+                          <input type="text" name="name" value="${escapeHtml(project.name)}" placeholder="Nombre" style="max-width: 180px;" />
+                          <input type="number" name="requestQuotaMonthly" min="0" value="${escapeHtml(project.requestQuotaMonthly ?? '')}" placeholder="Req/mes" style="max-width: 120px;" />
+                          <select name="modelAccessMode" style="max-width: 220px;">
+                            <option value="all" ${project.modelAccessMode === 'all' ? 'selected' : ''}>Todos los modelos</option>
+                            <option value="selected" ${project.modelAccessMode === 'selected' ? 'selected' : ''}>Solo seleccionados</option>
+                            <option value="none" ${project.modelAccessMode === 'none' ? 'selected' : ''}>Ningun modelo</option>
+                          </select>
+                          ${renderProjectModelPicker(project.allowedModelIds || [], availableModels)}
+                        </div>
                         <input type="hidden" name="description" value="${escapeHtml(project.description ?? '')}" />
                         <input type="hidden" name="isActive" value="${project.isActive ? 'true' : 'false'}" />
                         <button class="ghost-button" type="submit">Guardar</button>
@@ -3619,7 +3748,7 @@ function renderSettingsMultiPage() {
             <form data-form="update-model-limit">
               <label>Modelo
                 <select name="modelId">
-                  ${availableModels.map((modelId) => `<option value="${escapeHtml(modelId)}">${escapeHtml(modelId)}</option>`).join('')}
+                  ${availableModelIds.map((modelId) => `<option value="${escapeHtml(modelId)}">${escapeHtml(modelId)}</option>`).join('')}
                 </select>
               </label>
               ${renderLimitFields(createEmptyLimitRule(defaultModelId, defaultModelId.split('/')[0] || null))}
@@ -3928,15 +4057,15 @@ async function submitChat(form) {
     return;
   }
 
+  const selectedModel = String(formData.get('model') || state.chatModel || '').trim() || state.chatModel || 'auto';
+  state.chatModel = selectedModel;
   state.busy = true;
   state.chatDraft = '';
   state.chatMessages.push({ role: 'user', content: message });
   render();
+  scrollChatToBottom();
 
   try {
-    const select = document.querySelector('#chat-model-select');
-    const model = select ? select.value : state.chatModel;
-    state.chatModel = model || 'auto';
     const response = await apiRequest('/v1/chat/completions', {
       method: 'POST',
       body: {
@@ -3950,11 +4079,15 @@ async function submitChat(form) {
     const assistant = response.choices?.[0]?.message?.content || '[Sin contenido]';
     state.chatMessages.push({ role: 'assistant', content: assistant });
     await refreshDashboard();
+    scrollChatToBottom();
   } catch (error) {
     state.chatMessages.push({ role: 'system', content: error.message || 'No se pudo completar el chat.' });
+    render();
+    scrollChatToBottom();
   } finally {
     state.busy = false;
     render();
+    scrollChatToBottom();
   }
 }
 
@@ -4022,7 +4155,6 @@ async function submitCreateUser(form) {
       password: formData.get('password'),
       projectId: formData.get('projectId') || null,
       monthlyRequestQuota: Number(formData.get('monthlyRequestQuota') || 0) || null,
-      monthlyBudgetUsd: Number(formData.get('monthlyBudgetUsd') || 0) || null,
     },
   });
   state.lastCreatedApiKey = result.rawApiKey;
@@ -4038,7 +4170,6 @@ async function submitUpdateUserProduct(form) {
     method: 'PATCH',
     body: {
       monthlyRequestQuota: Number(formData.get('monthlyRequestQuota') || 0) || null,
-      monthlyBudgetUsd: Number(formData.get('monthlyBudgetUsd') || 0) || null,
     },
   });
   await refreshDashboard();
@@ -4052,7 +4183,8 @@ async function submitCreateProject(form) {
     body: {
       name: formData.get('name'),
       description: formData.get('description'),
-      budgetMonthlyUsd: Number(formData.get('budgetMonthlyUsd') || 0) || null,
+      modelAccessMode: formData.get('modelAccessMode') || 'all',
+      allowedModelIds: getMultiValueFormEntries(formData, 'allowedModelIds'),
       requestQuotaMonthly: Number(formData.get('requestQuotaMonthly') || 0) || null,
     },
   });
@@ -4068,7 +4200,8 @@ async function submitUpdateProject(form) {
     body: {
       name: formData.get('name'),
       description: formData.get('description'),
-      budgetMonthlyUsd: Number(formData.get('budgetMonthlyUsd') || 0) || null,
+      modelAccessMode: formData.get('modelAccessMode') || 'all',
+      allowedModelIds: getMultiValueFormEntries(formData, 'allowedModelIds'),
       requestQuotaMonthly: Number(formData.get('requestQuotaMonthly') || 0) || null,
       isActive: formData.get('isActive') === 'true',
     },
@@ -4136,13 +4269,13 @@ async function submitCreateCustomProvider(form) {
       protocol: String(formData.get('protocol') || state.cpDraft.protocol || 'openai').trim() || 'openai',
       baseUrl: String(formData.get('baseUrl') || '').trim(),
       apiKey: String(formData.get('apiKey') || '').trim() || null,
-        models: models.map((m) => ({
-          id: m.id.trim(),
-          supportsTools: Boolean(m.supportsTools),
-          supportsVision: Boolean(m.supportsVision),
-          inImagePool: Boolean(m.inImagePool),
-          inVideoPool: Boolean(m.inVideoPool),
-        })),
+      models: models.map((m) => ({
+        id: m.id.trim(),
+        supportsTools: Boolean(m.supportsTools),
+        supportsVision: Boolean(m.supportsVision),
+        supportsImageGeneration: Boolean(m.supportsImageGeneration),
+        supportsVideoGeneration: Boolean(m.supportsVideoGeneration),
+      })),
     },
   });
   state.cpDraft = createEmptyCustomProviderDraft();
@@ -4170,8 +4303,8 @@ async function submitUpdateCustomProvider(form) {
       id: m.id.trim(),
       supportsTools: Boolean(m.supportsTools),
       supportsVision: Boolean(m.supportsVision),
-      inImagePool: Boolean(m.inImagePool),
-      inVideoPool: Boolean(m.inVideoPool),
+      supportsImageGeneration: Boolean(m.supportsImageGeneration),
+      supportsVideoGeneration: Boolean(m.supportsVideoGeneration),
     })),
   };
   if (newApiKey) {
@@ -4590,7 +4723,7 @@ async function handleClick(event) {
       const scope = target.dataset.scope;
       const models = scope === 'edit' ? state.cpEditing?.models : state.cpDraft.models;
       if (models) {
-        models.push({ id: '', supportsTools: false, supportsVision: false, inImagePool: false, inVideoPool: false });
+        models.push(createEmptyCustomProviderModel());
         render();
       }
       return;
@@ -4621,7 +4754,7 @@ async function handleClick(event) {
           baseUrl: provider.baseUrl,
           hasApiKey: provider.hasApiKey,
           newApiKey: '',
-          models: provider.models.map((m) => ({ ...m, inImagePool: Boolean(m.inImagePool), inVideoPool: Boolean(m.inVideoPool) })),
+          models: provider.models.map((m) => ({ ...m })),
         };
         render();
       }
@@ -4757,6 +4890,17 @@ function handleInput(event) {
   if (action === 'playground-auth-mode' && target instanceof HTMLSelectElement) {
     state.playgroundAuthMode = target.value;
     render();
+    return;
+  }
+
+  if (action === 'chat-model' && target instanceof HTMLSelectElement) {
+    state.chatModel = target.value || 'auto';
+    return;
+  }
+
+  if (action === 'chat-draft' && target instanceof HTMLTextAreaElement) {
+    state.chatDraft = target.value;
+    return;
   }
 
   if (action === 'cp-draft-name' && target instanceof HTMLInputElement) {
@@ -4816,13 +4960,39 @@ function handleInput(event) {
     if (field === 'supportsVision' && target instanceof HTMLInputElement) {
       models[index].supportsVision = target.checked;
     }
-    if (field === 'inImagePool' && target instanceof HTMLInputElement) {
-      models[index].inImagePool = target.checked;
+    if (field === 'supportsImageGeneration' && target instanceof HTMLInputElement) {
+      models[index].supportsImageGeneration = target.checked;
     }
-    if (field === 'inVideoPool' && target instanceof HTMLInputElement) {
-      models[index].inVideoPool = target.checked;
+    if (field === 'supportsVideoGeneration' && target instanceof HTMLInputElement) {
+      models[index].supportsVideoGeneration = target.checked;
     }
     return;
+  }
+}
+
+async function handleKeydown(event) {
+  const target = event.target;
+  if (!(target instanceof HTMLTextAreaElement)) {
+    return;
+  }
+
+  if (event.key !== 'Enter' || !event.ctrlKey) {
+    return;
+  }
+
+  const form = target.closest('form[data-form="chat"]');
+  if (!(form instanceof HTMLFormElement) || state.busy) {
+    return;
+  }
+
+  event.preventDefault();
+  clearFlash();
+
+  try {
+    await submitChat(form);
+  } catch (error) {
+    const flash = buildFlashFromError(error, 'No se pudo completar la accion.');
+    setFlash(flash.message, 'error', flash.details);
   }
 }
 
@@ -4830,6 +5000,7 @@ app.addEventListener('submit', handleSubmit);
 app.addEventListener('click', handleClick);
 app.addEventListener('input', handleInput);
 app.addEventListener('change', handleInput);
+app.addEventListener('keydown', handleKeydown);
 
 render();
 bootstrapFlow().catch((error) => {

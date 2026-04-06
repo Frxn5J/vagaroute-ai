@@ -203,8 +203,20 @@ export function hasImage(request: ChatRequest): boolean {
   );
 }
 
-function getCandidatePool(requireTools: boolean, requireVision: boolean): ServiceState[] {
+function getCandidatePool(
+  requireTools: boolean,
+  requireVision: boolean,
+  allowedModelIds?: ReadonlySet<string> | null,
+): ServiceState[] {
   let pool = states.filter((state) => !state.disabled && !state.paidOnly);
+
+  if (allowedModelIds && allowedModelIds.size > 0) {
+    pool = pool.filter((state) => allowedModelIds.has(state.service.name));
+  }
+
+  if (allowedModelIds && allowedModelIds.size === 0) {
+    pool = [];
+  }
 
   if (requireTools) {
     if (AGENT_MODEL_NAMES.length > 0) {
@@ -226,10 +238,14 @@ function getCandidatePool(requireTools: boolean, requireVision: boolean): Servic
   });
 }
 
-export function getPool(requireTools: boolean, requireVision: boolean): ServiceState[] {
+export function getPool(
+  requireTools: boolean,
+  requireVision: boolean,
+  allowedModelIds?: ReadonlySet<string> | null,
+): ServiceState[] {
   const providerCooldowns = getProviderCooldownMap();
   const now = Date.now();
-  return getCandidatePool(requireTools, requireVision)
+  return getCandidatePool(requireTools, requireVision, allowedModelIds)
     .filter((state) => {
       const providerCooldownUntil = providerCooldowns.get(getProviderIdFromServiceName(state.service.name))?.cooldownUntil ?? 0;
       return Math.max(state.cooldownUntil, providerCooldownUntil) <= now;
@@ -408,12 +424,14 @@ export async function tryServices(
   id: string,
   forceTools: boolean = false,
   forceVision: boolean = false,
+  allowedModelIds?: string[] | null,
 ): Promise<{ stream: AsyncIterable<string>; serviceName: string }> {
   const requireTools = forceTools || Boolean(request.tools?.length);
   const requireVision = forceVision || hasImage(request);
   const errors: string[] = [];
   const attempted = new Set<string>();
-  const pool = getCandidatePool(requireTools, requireVision);
+  const allowedModels = allowedModelIds ? new Set(allowedModelIds) : null;
+  const pool = getCandidatePool(requireTools, requireVision, allowedModels);
   const estimate = estimateChatUsage(request);
 
   if (pool.length === 0) {

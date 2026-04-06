@@ -5,6 +5,7 @@ import {
   deleteCustomProvider,
   discoverCustomProviderModels,
   listCustomProviders,
+  normalizeCustomModelConfigs,
   updateCustomProvider,
   type CustomModelConfig,
   type CustomProviderProtocol,
@@ -47,15 +48,7 @@ export async function handleCustomProviders(
         return errorResponse(req, 400, 'models debe ser un array con al menos un modelo', 'validation_error');
       }
 
-      const models: CustomModelConfig[] = body.models
-        .map((m) => ({
-          id: String(m.id ?? '').trim(),
-          supportsTools: m.supportsTools === true,
-          supportsVision: m.supportsVision === true,
-          inImagePool: m.inImagePool === true,
-          inVideoPool: m.inVideoPool === true,
-        }))
-        .filter((m) => m.id);
+      const models: CustomModelConfig[] = normalizeCustomModelConfigs(body.models);
 
       if (models.length === 0) {
         return errorResponse(req, 400, 'Al menos un modelo debe tener un id válido', 'validation_error');
@@ -118,15 +111,7 @@ export async function handleCustomProviders(
       }>(req);
 
       const models: CustomModelConfig[] | undefined = Array.isArray(body.models)
-        ? body.models
-            .map((m) => ({
-              id: String(m.id ?? '').trim(),
-              supportsTools: m.supportsTools === true,
-              supportsVision: m.supportsVision === true,
-              inImagePool: m.inImagePool === true,
-              inVideoPool: m.inVideoPool === true,
-            }))
-            .filter((m) => m.id)
+        ? normalizeCustomModelConfigs(body.models)
         : undefined;
 
       const updated = updateCustomProvider(customProviderMatch[1] ?? '', {

@@ -1,12 +1,13 @@
 import type { AuthContext } from '../middlewares/auth';
 import { isAdmin } from '../middlewares/auth';
 import {
+  getProjectModelAccess,
   listAllProjects,
   listProjectsForUser,
   recordRequestMetric,
   type DashboardMetrics,
+  type ProjectModelAccessMode,
 } from '../core/db';
-import { estimateUsageCostUsd } from '../core/costs';
 import { buildUsageEstimate, normalizeProviderId } from '../core/usageLimits';
 import { buildCacheScopeKey } from '../core/responseCache';
 import { appConfig } from '../core/config';
@@ -15,6 +16,7 @@ import { getRequestId } from '../utils/requestContext';
 import { randomToken } from '../utils/crypto';
 import type { StreamUsage, UsageSource } from '../utils/stream';
 import type { ChatRequest } from '../types';
+import type { ServiceState } from '../core/pool';
 
 // ─── Context & handler types ───────────────────────────────────────────────
 
@@ -128,6 +130,58 @@ export function resolveCacheScopeKey(auth: AuthContext | null, req: Request): st
   });
 }
 
+export function resolveProjectModelPolicy(auth: AuthContext | null, req: Request): {
+  projectId: string | null;
+  mode: ProjectModelAccessMode;
+  allowedModelIds: string[];
+} {
+  const requestedProjectId = req.headers.get('x-project-id')?.trim() || null;
+  let projectId: string | null = null;
+
+  if (auth?.apiKey?.projectId) {
+    projectId = auth.apiKey.projectId;
+  } else if (auth?.user.id === 'system') {
+    projectId = requestedProjectId;
+  } else if (auth && requestedProjectId) {
+    const visibleProjects = isAdmin(auth) ? listAllProjects() : listProjectsForUser(auth.user.id);
+    projectId = visibleProjects.some((project) => project.id === requestedProjectId) ? requestedProjectId : null;
+  }
+
+  const access = getProjectModelAccess(projectId);
+  return {
+    projectId,
+    mode: access.mode,
+    allowedModelIds: access.allowedModelIds,
+  };
+}
+
+export function isModelAllowedByProjectPolicy(
+  modelId: string,
+  policy: { mode: ProjectModelAccessMode; allowedModelIds: string[] },
+): boolean {
+  if (policy.mode === 'all') {
+    return true;
+  }
+  if (policy.mode === 'none') {
+    return false;
+  }
+  return policy.allowedModelIds.includes(modelId);
+}
+
+export function filterStatesByProjectPolicy(
+  poolStates: ServiceState[],
+  policy: { mode: ProjectModelAccessMode; allowedModelIds: string[] },
+): ServiceState[] {
+  if (policy.mode === 'all') {
+    return poolStates;
+  }
+  if (policy.mode === 'none') {
+    return [];
+  }
+  const allowed = new Set(policy.allowedModelIds);
+  return poolStates.filter((state) => allowed.has(state.service.name));
+}
+
 export function resolveRequestMetricsScope(auth: AuthContext): {
   scope: { userId?: string | null; visibleProjectIds?: string[] | null } | undefined;
   visibleProjects: ReturnType<typeof listProjectsForUser>;
@@ -210,7 +264,6 @@ export function recordServiceMetric(
     totalTokens?: number;
     audioSeconds?: number;
     errorMessage?: string | null;
-    estimatedCostUsd?: number;
     /** Tag whether token counts were confirmed by the provider or are local estimates. */
     usageSource?: UsageSource;
   },
@@ -232,17 +285,6 @@ export function recordServiceMetric(
     completionTokens: details.completionTokens ?? 0,
     totalTokens: details.totalTokens ?? 0,
     audioSeconds: details.audioSeconds ?? 0,
-    estimatedCostUsd:
-      details.estimatedCostUsd ??
-      estimateUsageCostUsd({
-        requestType: details.requestType,
-        provider: details.provider,
-        model: details.model,
-        promptTokens: details.promptTokens,
-        completionTokens: details.completionTokens,
-        totalTokens: details.totalTokens,
-        audioSeconds: details.audioSeconds,
-      }),
     errorMessage: details.errorMessage ?? null,
     sourceIp: ip,
     usageSource: details.usageSource ?? 'estimated',

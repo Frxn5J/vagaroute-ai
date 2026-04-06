@@ -221,7 +221,6 @@ async function getDashboard(cookie: string) {
   expect(response.status).toBe(200);
   return await response.json() as {
     auth: { isAdmin: boolean };
-    spend: { currentMonthUsd: number; projectedMonthUsd: number };
     tokens: {
       currentMonthTokens: number;
       projectedMonthTokens: number;
@@ -237,9 +236,9 @@ async function getDashboard(cookie: string) {
     tokenization: { mode: string; exactForCompletedResponses: boolean };
     metrics: {
       totals: { requests: number; users: number; projects: number; serviceApiKeys: number; userApiKeys: number };
-      providers: Array<{ provider: string; totalCostUsd: number; totalTokens: number; promptTokens: number; completionTokens: number }>;
-      models: Array<{ model: string; totalCostUsd: number; totalTokens: number; promptTokens: number; completionTokens: number }>;
-      recent: Array<{ estimatedCostUsd: number; totalTokens: number; promptTokens: number; completionTokens: number }>;
+      providers: Array<{ provider: string; totalTokens: number; promptTokens: number; completionTokens: number }>;
+      models: Array<{ model: string; totalTokens: number; promptTokens: number; completionTokens: number }>;
+      recent: Array<{ totalTokens: number; promptTokens: number; completionTokens: number }>;
       daily: Array<{ bucket: string; totalTokens: number; promptTokens: number; completionTokens: number; requestCount: number }>;
       requestTypes: Array<{ requestType: string; totalTokens: number; promptTokens: number; completionTokens: number }>;
       summary: { requestCount: number; totalTokens: number; promptTokens: number; completionTokens: number; successRate: number };
@@ -545,7 +544,6 @@ describe('projects and product flows', () => {
         name: 'Proyecto Growth',
         description: 'Equipo de growth',
         requestQuotaMonthly: 25,
-        budgetMonthlyUsd: 10,
       },
     });
     expect(createProjectResponse.status).toBe(201);
@@ -607,7 +605,126 @@ describe('projects and product flows', () => {
     expect(invitedProject?.role).toBe('owner');
   });
 
-  test('tracks user and project quotas, spend, tokens, alerts, cache and tokenization in dashboard', async () => {
+  test('restricts visible and usable chat models per project', async () => {
+    const admin = await bootstrapAdmin();
+
+    replacePoolStates([
+      buildMockState(createSuccessService('Mock/alpha')),
+      buildMockState(createSuccessService('Mock/bravo')),
+    ]);
+
+    const createProjectResponse = await request('/api/projects', {
+      method: 'POST',
+      headers: {
+        Cookie: admin.cookie,
+      },
+      json: {
+        name: 'Proyecto Chat',
+        modelAccessMode: 'selected',
+        allowedModelIds: ['Mock/alpha'],
+      },
+    });
+    expect(createProjectResponse.status).toBe(201);
+
+    const projectPayload = await createProjectResponse.json() as {
+      project: { id: string; modelAccessMode: string; allowedModelIds: string[] };
+    };
+    expect(projectPayload.project.modelAccessMode).toBe('selected');
+    expect(projectPayload.project.allowedModelIds).toEqual(['Mock/alpha']);
+
+    const createUserResponse = await request('/api/users', {
+      method: 'POST',
+      headers: {
+        Cookie: admin.cookie,
+      },
+      json: {
+        name: 'Project User',
+        email: 'project-user@example.com',
+        password: 'password123',
+        projectId: projectPayload.project.id,
+      },
+    });
+    expect(createUserResponse.status).toBe(201);
+
+    const userPayload = await createUserResponse.json() as {
+      rawApiKey: string;
+    };
+
+    const modelsResponse = await request('/v1/models', {
+      headers: {
+        Authorization: `Bearer ${userPayload.rawApiKey}`,
+      },
+    });
+    expect(modelsResponse.status).toBe(200);
+    const modelsPayload = await modelsResponse.json() as {
+      data: Array<{ id: string }>;
+    };
+    expect(modelsPayload.data.some((item) => item.id === 'Mock/alpha')).toBe(true);
+    expect(modelsPayload.data.some((item) => item.id === 'Mock/bravo')).toBe(false);
+
+    const blockedChatResponse = await request('/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${userPayload.rawApiKey}`,
+      },
+      json: {
+        model: 'Mock/bravo',
+        stream: false,
+        messages: [{ role: 'user', content: 'hola' }],
+      },
+    });
+    expect(blockedChatResponse.status).toBe(403);
+
+    const autoChatResponse = await request('/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${userPayload.rawApiKey}`,
+      },
+      json: {
+        model: 'auto',
+        stream: false,
+        messages: [{ role: 'user', content: 'hola' }],
+      },
+    });
+    expect(autoChatResponse.status).toBe(200);
+    const autoChatPayload = await autoChatResponse.json() as { model: string };
+    expect(autoChatPayload.model).toBe('Mock/alpha');
+
+    const disableModelsResponse = await request(`/api/projects/${projectPayload.project.id}`, {
+      method: 'PATCH',
+      headers: {
+        Cookie: admin.cookie,
+      },
+      json: {
+        modelAccessMode: 'none',
+      },
+    });
+    expect(disableModelsResponse.status).toBe(200);
+
+    const emptyModelsResponse = await request('/v1/models', {
+      headers: {
+        Authorization: `Bearer ${userPayload.rawApiKey}`,
+      },
+    });
+    expect(emptyModelsResponse.status).toBe(200);
+    const emptyModelsPayload = await emptyModelsResponse.json() as { data: Array<{ id: string }> };
+    expect(emptyModelsPayload.data).toHaveLength(0);
+
+    const blockedAutoResponse = await request('/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${userPayload.rawApiKey}`,
+      },
+      json: {
+        model: 'auto',
+        stream: false,
+        messages: [{ role: 'user', content: 'hola' }],
+      },
+    });
+    expect(blockedAutoResponse.status).toBe(403);
+  });
+
+  test('tracks user and project quotas, tokens, alerts, cache and tokenization in dashboard', async () => {
     const admin = await bootstrapAdmin();
 
     const createProjectResponse = await request('/api/projects', {
@@ -618,7 +735,6 @@ describe('projects and product flows', () => {
       json: {
         name: 'Proyecto Consumo',
         requestQuotaMonthly: 1,
-        budgetMonthlyUsd: 0.00001,
       },
     });
     expect(createProjectResponse.status).toBe(201);
@@ -637,7 +753,6 @@ describe('projects and product flows', () => {
         password: 'password123',
         projectId: projectPayload.project.id,
         monthlyRequestQuota: 1,
-        monthlyBudgetUsd: 0.00001,
       },
     });
     expect(createUserResponse.status).toBe(201);
@@ -663,8 +778,6 @@ describe('projects and product flows', () => {
     expect(chatResponse.status).toBe(200);
 
     const dashboard = await getDashboard(admin.cookie);
-    expect(dashboard.spend.currentMonthUsd >= 0).toBe(true);
-    expect(dashboard.spend.projectedMonthUsd >= dashboard.spend.currentMonthUsd).toBe(true);
     expect(dashboard.tokens.currentMonthTokens).toBeGreaterThan(0);
     expect(dashboard.tokens.projectedMonthTokens).toBeGreaterThanOrEqual(dashboard.tokens.currentMonthTokens);
     expect(dashboard.tokens.currentMonthPromptTokens).toBeGreaterThan(0);
@@ -676,7 +789,6 @@ describe('projects and product flows', () => {
     expect(dashboard.metrics.providers.some((item) => item.totalTokens > 0)).toBe(true);
     expect(dashboard.metrics.providers.some((item) => item.promptTokens > 0)).toBe(true);
     expect(dashboard.metrics.providers.some((item) => item.completionTokens > 0)).toBe(true);
-    expect(dashboard.metrics.providers.some((item) => item.totalCostUsd >= 0)).toBe(true);
     expect(dashboard.metrics.models.some((item) => item.model.toLowerCase().includes('router'))).toBe(true);
     expect(dashboard.metrics.models.some((item) => item.totalTokens > 0)).toBe(true);
     expect(dashboard.metrics.models.some((item) => item.promptTokens > 0)).toBe(true);
@@ -684,7 +796,6 @@ describe('projects and product flows', () => {
     expect(dashboard.metrics.recent.some((item) => item.totalTokens > 0)).toBe(true);
     expect(dashboard.metrics.recent.some((item) => item.promptTokens > 0)).toBe(true);
     expect(dashboard.metrics.recent.some((item) => item.completionTokens > 0)).toBe(true);
-    expect(dashboard.metrics.recent.some((item) => item.estimatedCostUsd >= 0)).toBe(true);
     expect(dashboard.metrics.daily.length).toBeGreaterThan(0);
     expect(dashboard.metrics.requestTypes.some((item) => item.requestType === 'chat')).toBe(true);
     expect(dashboard.metrics.summary.totalTokens).toBeGreaterThan(0);
@@ -767,7 +878,7 @@ describe('cache and token usage', () => {
     expect(callCount).toBe(1);
 
     const chatMetrics = db.query(`
-      SELECT prompt_tokens, completion_tokens, total_tokens, estimated_cost_usd
+      SELECT prompt_tokens, completion_tokens, total_tokens
       FROM request_metrics
       WHERE path = '/v1/chat/completions'
       ORDER BY created_at ASC
@@ -775,18 +886,15 @@ describe('cache and token usage', () => {
       prompt_tokens: number;
       completion_tokens: number;
       total_tokens: number;
-      estimated_cost_usd: number;
     }>;
 
     expect(chatMetrics).toHaveLength(2);
     expect(chatMetrics[0]?.prompt_tokens).toBe(21);
     expect(chatMetrics[0]?.completion_tokens).toBe(5);
     expect(chatMetrics[0]?.total_tokens).toBe(26);
-    expect((chatMetrics[0]?.estimated_cost_usd ?? 0) > 0).toBe(true);
     expect(chatMetrics[1]?.prompt_tokens).toBe(21);
     expect(chatMetrics[1]?.completion_tokens).toBe(5);
     expect(chatMetrics[1]?.total_tokens).toBe(26);
-    expect(chatMetrics[1]?.estimated_cost_usd).toBe(0);
 
     const dashboard = await getDashboard(bootstrap.cookie);
     expect(dashboard.cache.hits).toBeGreaterThanOrEqual(1);
@@ -1004,18 +1112,16 @@ describe('custom providers', () => {
         protocol: 'gemini',
         baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
         apiKey: 'AIza-test',
-        models: [{ id: 'gemini-2.5-pro', supportsTools: true, supportsVision: true, inImagePool: true, inVideoPool: false }],
+        models: [{ id: 'gemini-2.5-pro', supportsTools: true, supportsVision: true, supportsImageGeneration: false, supportsVideoGeneration: false }],
       },
     });
 
     expect(createResponse.status).toBe(201);
     const createdPayload = await createResponse.json() as {
-      customProvider: { id: string; protocol: string; models: Array<{ id: string; inImagePool: boolean; inVideoPool: boolean }> };
+      customProvider: { id: string; protocol: string; models: Array<{ id: string }> };
     };
     expect(createdPayload.customProvider.protocol).toBe('gemini');
     expect(createdPayload.customProvider.models[0]?.id).toBe('gemini-2.5-pro');
-    expect(createdPayload.customProvider.models[0]?.inImagePool).toBe(true);
-    expect(createdPayload.customProvider.models[0]?.inVideoPool).toBe(false);
 
     const updateResponse = await request(`/api/custom-providers/${createdPayload.customProvider.id}`, {
       method: 'PATCH',
@@ -1025,19 +1131,109 @@ describe('custom providers', () => {
       json: {
         protocol: 'anthropic',
         baseUrl: 'https://api.anthropic.com/v1',
-        models: [{ id: 'claude-3-7-sonnet-latest', supportsTools: true, supportsVision: true, inImagePool: false, inVideoPool: true }],
+        models: [{ id: 'claude-3-7-sonnet-latest', supportsTools: true, supportsVision: true, supportsImageGeneration: false, supportsVideoGeneration: false }],
       },
     });
 
     expect(updateResponse.status).toBe(200);
 
     const dashboard = await getDashboard(admin.cookie) as {
-      customProviders?: Array<{ protocol: string; models: Array<{ id: string; inImagePool: boolean; inVideoPool: boolean }> }>;
+      customProviders?: Array<{ protocol: string; models: Array<{ id: string }> }>;
     };
     expect(dashboard.customProviders?.[0]?.protocol).toBe('anthropic');
     expect(dashboard.customProviders?.[0]?.models[0]?.id).toBe('claude-3-7-sonnet-latest');
-    expect(dashboard.customProviders?.[0]?.models[0]?.inImagePool).toBe(false);
-    expect(dashboard.customProviders?.[0]?.models[0]?.inVideoPool).toBe(true);
+  });
+
+  test('exposes custom image and video targets without forcing media-only models into chat pool', async () => {
+    const admin = await bootstrapAdmin();
+
+    const createResponse = await request('/api/custom-providers', {
+      method: 'POST',
+      headers: { Cookie: admin.cookie },
+      json: {
+        name: 'Media Sidecar',
+        protocol: 'openai',
+        baseUrl: 'https://media.example/v1',
+        apiKey: 'sk-media',
+        models: [
+          { id: 'flux-pro', supportsTools: false, supportsVision: false, supportsImageGeneration: true, supportsVideoGeneration: false },
+          { id: 'veo-pro', supportsTools: false, supportsVision: false, supportsImageGeneration: false, supportsVideoGeneration: true },
+        ],
+      },
+    });
+
+    expect(createResponse.status).toBe(201);
+
+    const dashboard = await getDashboard(admin.cookie) as {
+      pool?: { models?: Array<{ id: string }> };
+      modelAliasCategories?: Array<{ id: string; targets: string[] }>;
+    };
+    expect(dashboard.pool?.models?.some((model) => model.id === 'media-sidecar/flux-pro')).toBe(false);
+    expect(dashboard.pool?.models?.some((model) => model.id === 'media-sidecar/veo-pro')).toBe(false);
+    expect(dashboard.modelAliasCategories?.find((item) => item.id === 'images')?.targets).toContain('media-sidecar/flux-pro');
+    expect(dashboard.modelAliasCategories?.find((item) => item.id === 'videos')?.targets).toContain('media-sidecar/veo-pro');
+  });
+
+  test('routes image generation to a custom media provider when the model is flagged for images', async () => {
+    const admin = await bootstrapAdmin();
+
+    const createResponse = await request('/api/custom-providers', {
+      method: 'POST',
+      headers: { Cookie: admin.cookie },
+      json: {
+        name: 'Media Sidecar',
+        protocol: 'openai',
+        baseUrl: 'https://media.example/v1',
+        apiKey: 'sk-media',
+        models: [
+          { id: 'flux-pro', supportsTools: false, supportsVision: false, supportsImageGeneration: true, supportsVideoGeneration: false },
+        ],
+      },
+    });
+
+    expect(createResponse.status).toBe(201);
+
+    const originalFetch = globalThis.fetch;
+    const calls: Array<{ url: string; auth: string | null; body: string }> = [];
+
+    try {
+      globalThis.fetch = (async (input: Request | URL | string, init?: RequestInit) => {
+        const url = String(input instanceof Request ? input.url : input);
+        calls.push({
+          url,
+          auth: new Headers(init?.headers).get('Authorization'),
+          body: typeof init?.body === 'string' ? init.body : '',
+        });
+        return new Response(JSON.stringify({
+          created: 1710000000,
+          data: [{ url: 'https://cdn.example.com/generated.png' }],
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }) as typeof fetch;
+
+      const imageResponse = await request('/v1/images/generations', {
+        method: 'POST',
+        headers: { Cookie: admin.cookie },
+        json: {
+          prompt: 'Warm product illustration',
+          model: 'media-sidecar/flux-pro',
+        },
+      });
+
+      expect(imageResponse.status).toBe(200);
+      const payload = await imageResponse.json() as { data?: Array<{ url?: string }> };
+      expect(payload.data?.[0]?.url).toBe('https://cdn.example.com/generated.png');
+      expect(calls[0]?.url).toBe('https://media.example/v1/images/generations');
+      expect(calls[0]?.auth).toBe('Bearer sk-media');
+      expect(JSON.parse(calls[0]?.body || '{}')).toMatchObject({
+        prompt: 'Warm product illustration',
+        model: 'flux-pro',
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 

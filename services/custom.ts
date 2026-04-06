@@ -11,6 +11,34 @@ function normalizeBaseUrl(baseUrl: string): string {
   return baseUrl.trim().replace(/\/+$/, '');
 }
 
+function normalizeGeminiModelId(modelId: string): string {
+  return modelId.trim().replace(/^models\//i, '');
+}
+
+function buildProtocolAuthHeaders(protocol: CustomProviderProtocol, apiKey: string | null): Record<string, string> {
+  if (!apiKey) {
+    return protocol === 'anthropic'
+      ? { 'anthropic-version': '2023-06-01' }
+      : {};
+  }
+
+  if (protocol === 'openai') {
+    return { Authorization: `Bearer ${apiKey}` };
+  }
+
+  if (protocol === 'gemini') {
+    return {
+      Authorization: `Bearer ${apiKey}`,
+      'x-goog-api-key': apiKey,
+    };
+  }
+
+  return {
+    'anthropic-version': '2023-06-01',
+    'x-api-key': apiKey,
+  };
+}
+
 function createChunk(input: {
   id: string;
   model: string;
@@ -380,12 +408,12 @@ async function createGeminiStream(input: {
   request: ChatRequest;
 }): Promise<AsyncIterable<string>> {
   const { body } = buildGeminiPayload(input.request);
-  const response = await fetch(`${normalizeBaseUrl(input.baseUrl)}/models/${encodeURIComponent(input.modelId)}:streamGenerateContent?alt=sse`, {
+  const response = await fetch(`${normalizeBaseUrl(input.baseUrl)}/models/${encodeURIComponent(normalizeGeminiModelId(input.modelId))}:streamGenerateContent?alt=sse`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Accept: 'text/event-stream',
-      ...(input.apiKey ? { 'x-goog-api-key': input.apiKey } : {}),
+      ...buildProtocolAuthHeaders('gemini', input.apiKey),
     },
     body: JSON.stringify(body),
   });
@@ -488,8 +516,7 @@ async function createAnthropicStream(input: {
     headers: {
       'Content-Type': 'application/json',
       Accept: 'text/event-stream',
-      'anthropic-version': '2023-06-01',
-      ...(input.apiKey ? { 'x-api-key': input.apiKey } : {}),
+      ...buildProtocolAuthHeaders('anthropic', input.apiKey),
     },
     body: JSON.stringify(buildAnthropicPayload({ ...input.request, model: input.modelId })),
   });
@@ -675,6 +702,13 @@ export async function loadCustomServices(): Promise<AIService[]> {
     const apiKey = getDecryptedCustomProviderKey(provider.id) ?? 'no-key';
 
     for (const model of provider.models) {
+      const includeInChatPool = (!model.supportsImageGeneration && !model.supportsVideoGeneration)
+        || model.supportsTools
+        || model.supportsVision;
+      if (!includeInChatPool) {
+        continue;
+      }
+
       services.push(
         createCustomService({
           providerSlug: provider.slug,

@@ -1,5 +1,5 @@
 import { states } from './pool';
-import { listActiveCustomMediaModels } from './customProviders';
+import { getCustomProviderMediaTargets } from './customProviders';
 import type { ModelAliasCategory } from './db';
 
 export const MODEL_ALIAS_CATEGORIES: ModelAliasCategory[] = ['chat', 'images', 'imageEdit', 'videos'];
@@ -42,12 +42,12 @@ export function getAvailableAliasTargets(category: ModelAliasCategory): string[]
     return states.map((state) => state.service.name);
   }
   if (category === 'images') {
-    return [...IMAGE_TARGETS, ...listActiveCustomMediaModels('images').map((item) => `${item.providerSlug}/${item.model.id}`)];
+    return [...IMAGE_TARGETS, ...getCustomProviderMediaTargets('images')];
   }
   if (category === 'imageEdit') {
     return IMAGE_EDIT_TARGETS;
   }
-  return [...VIDEO_TARGETS, ...listActiveCustomMediaModels('videos').map((item) => `${item.providerSlug}/${item.model.id}`)];
+  return [...VIDEO_TARGETS, ...getCustomProviderMediaTargets('videos')];
 }
 
 export function isValidAliasTarget(targetModel: string, category: ModelAliasCategory): boolean {

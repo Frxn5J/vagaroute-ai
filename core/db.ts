@@ -81,11 +81,19 @@ db.exec(`
     name TEXT NOT NULL,
     slug TEXT NOT NULL UNIQUE,
     description TEXT,
-    budget_monthly_usd REAL,
+    model_access_mode TEXT NOT NULL DEFAULT 'all' CHECK(model_access_mode IN ('all', 'selected', 'none')),
     request_quota_monthly INTEGER,
     is_active INTEGER NOT NULL DEFAULT 1,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS project_allowed_models (
+    project_id TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (project_id, model_id),
+    FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
   );
 
   CREATE TABLE IF NOT EXISTS project_members (
@@ -155,7 +163,6 @@ db.exec(`
     model TEXT,
     status_code INTEGER NOT NULL,
     duration_ms INTEGER NOT NULL,
-    estimated_cost_usd REAL NOT NULL DEFAULT 0,
     error_message TEXT,
     source_ip TEXT,
     created_at INTEGER NOT NULL,
@@ -216,15 +223,15 @@ ensureColumn('request_metrics', 'completion_tokens', 'completion_tokens INTEGER 
 ensureColumn('request_metrics', 'total_tokens', 'total_tokens INTEGER NOT NULL DEFAULT 0');
 ensureColumn('request_metrics', 'audio_seconds', 'audio_seconds INTEGER NOT NULL DEFAULT 0');
 ensureColumn('request_metrics', 'usage_source', "usage_source TEXT NOT NULL DEFAULT 'estimated'");
+ensureColumn('projects', 'model_access_mode', "model_access_mode TEXT NOT NULL DEFAULT 'all'");
 ensureColumn('users', 'monthly_request_quota', 'monthly_request_quota INTEGER');
-ensureColumn('users', 'monthly_budget_usd', 'monthly_budget_usd REAL');
 ensureColumn('users', 'onboarding_completed_at', 'onboarding_completed_at INTEGER');
 ensureColumn('user_api_keys', 'project_id', 'project_id TEXT');
 ensureColumn('request_metrics', 'project_id', 'project_id TEXT');
-ensureColumn('request_metrics', 'estimated_cost_usd', 'estimated_cost_usd REAL NOT NULL DEFAULT 0');
 ensureColumn('request_metrics', 'error_message', 'error_message TEXT');
 
 db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_project_allowed_models_project_id ON project_allowed_models(project_id);
   CREATE INDEX IF NOT EXISTS idx_user_api_keys_project_id ON user_api_keys(project_id);
   CREATE INDEX IF NOT EXISTS idx_request_metrics_project_id ON request_metrics(project_id);
 `);
@@ -263,6 +270,7 @@ const deleteExpiredRequestRateLimitBuckets = db.prepare(`
 let _rateLimitCallCount = 0;
 
 export type UserRole = 'admin' | 'user';
+export type ProjectModelAccessMode = 'all' | 'selected' | 'none';
 
 export interface AppSettings {
   appName: string;
@@ -311,7 +319,6 @@ interface UserRow {
   role: UserRole;
   is_active: number;
   monthly_request_quota: number | null;
-  monthly_budget_usd: number | null;
   onboarding_completed_at: number | null;
   created_at: number;
   updated_at: number;
@@ -326,7 +333,6 @@ export interface UserRecord {
   role: UserRole;
   isActive: boolean;
   monthlyRequestQuota: number | null;
-  monthlyBudgetUsd: number | null;
   onboardingCompletedAt: number | null;
   createdAt: number;
   updatedAt: number;
@@ -339,7 +345,7 @@ interface ProjectRow {
   name: string;
   slug: string;
   description: string | null;
-  budget_monthly_usd: number | null;
+  model_access_mode: ProjectModelAccessMode;
   request_quota_monthly: number | null;
   is_active: number;
   created_at: number;
@@ -351,7 +357,8 @@ export interface ProjectRecord {
   name: string;
   slug: string;
   description: string | null;
-  budgetMonthlyUsd: number | null;
+  modelAccessMode: ProjectModelAccessMode;
+  allowedModelIds: string[];
   requestQuotaMonthly: number | null;
   isActive: boolean;
   createdAt: number;
@@ -419,7 +426,6 @@ interface SessionLookupRow {
   role: UserRole;
   is_active: number;
   monthly_request_quota: number | null;
-  monthly_budget_usd: number | null;
   onboarding_completed_at: number | null;
   user_created_at: number;
   user_updated_at: number;
@@ -471,7 +477,6 @@ interface UserApiKeyLookupRow extends UserApiKeyRow {
   role: UserRole;
   user_is_active: number;
   monthly_request_quota: number | null;
-  monthly_budget_usd: number | null;
   onboarding_completed_at: number | null;
   user_created_at: number;
   user_updated_at: number;
@@ -562,7 +567,6 @@ export interface RequestMetricInput {
   completionTokens?: number;
   totalTokens?: number;
   audioSeconds?: number;
-  estimatedCostUsd?: number;
   errorMessage?: string | null;
   sourceIp?: string | null;
   createdAt?: number;
@@ -592,7 +596,6 @@ export interface ProviderMetric {
   errorCount: number;
   avgDurationMs: number;
   lastRequestAt: number | null;
-  totalCostUsd: number;
 }
 
 export interface ModelMetric {
@@ -606,7 +609,6 @@ export interface ModelMetric {
   errorCount: number;
   avgDurationMs: number;
   lastRequestAt: number | null;
-  totalCostUsd: number;
 }
 
 export interface RecentMetric {
@@ -620,7 +622,6 @@ export interface RecentMetric {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
-  estimatedCostUsd: number;
   errorMessage: string | null;
   createdAt: number;
 }
@@ -633,15 +634,8 @@ export interface UsageSummary {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
-  estimatedCostUsd: number;
   monthlyRequestQuota: number | null;
-  monthlyBudgetUsd: number | null;
   status: 'ok' | 'warning' | 'exceeded';
-}
-
-export interface SpendSummary {
-  currentMonthUsd: number;
-  projectedMonthUsd: number;
 }
 
 export interface TokenSummary {
@@ -741,7 +735,6 @@ function toUserRecord(row: UserRow): UserRecord {
     role: row.role,
     isActive: row.is_active === 1,
     monthlyRequestQuota: row.monthly_request_quota,
-    monthlyBudgetUsd: row.monthly_budget_usd,
     onboardingCompletedAt: row.onboarding_completed_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -750,13 +743,49 @@ function toUserRecord(row: UserRow): UserRecord {
   };
 }
 
-function toProjectRecord(row: ProjectRow & { role?: 'owner' | 'member' }): ProjectRecord {
+function normalizeProjectModelAccessMode(value: string | null | undefined): ProjectModelAccessMode {
+  return value === 'selected' || value === 'none' ? value : 'all';
+}
+
+function normalizeProjectAllowedModelIds(modelIds: string[] | null | undefined): string[] {
+  return Array.from(new Set((modelIds ?? [])
+    .map((modelId) => modelId.trim())
+    .filter(Boolean))).sort((left, right) => left.localeCompare(right));
+}
+
+function getProjectAllowedModelsMap(projectIds: string[]): Map<string, string[]> {
+  const normalizedProjectIds = Array.from(new Set(projectIds.map((projectId) => projectId.trim()).filter(Boolean)));
+  const map = new Map<string, string[]>(normalizedProjectIds.map((projectId) => [projectId, []]));
+  if (normalizedProjectIds.length === 0) {
+    return map;
+  }
+
+  const placeholders = normalizedProjectIds.map(() => '?').join(', ');
+  const rows = db.query(`
+    SELECT project_id, model_id
+    FROM project_allowed_models
+    WHERE project_id IN (${placeholders})
+    ORDER BY model_id ASC
+  `).all(...normalizedProjectIds) as Array<{ project_id: string; model_id: string }>;
+
+  for (const row of rows) {
+    map.get(row.project_id)?.push(row.model_id);
+  }
+
+  return map;
+}
+
+function toProjectRecord(
+  row: ProjectRow & { role?: 'owner' | 'member' },
+  allowedModelIds: string[] = [],
+): ProjectRecord {
   return {
     id: row.id,
     name: row.name,
     slug: row.slug,
     description: row.description,
-    budgetMonthlyUsd: row.budget_monthly_usd,
+    modelAccessMode: normalizeProjectModelAccessMode(row.model_access_mode),
+    allowedModelIds: normalizeProjectAllowedModelIds(allowedModelIds),
     requestQuotaMonthly: row.request_quota_monthly,
     isActive: row.is_active === 1,
     createdAt: row.created_at,
@@ -776,6 +805,71 @@ function toInvitationTokenRecord(row: InvitationTokenRow): InvitationTokenRecord
     createdAt: row.created_at,
     acceptedAt: row.accepted_at,
     createdByUserId: row.created_by_user_id,
+  };
+}
+
+export function setProjectModelAccess(
+  projectId: string,
+  mode: ProjectModelAccessMode,
+  allowedModelIds?: string[] | null,
+): void {
+  const normalizedMode = normalizeProjectModelAccessMode(mode);
+  const normalizedModelIds = normalizedMode === 'selected'
+    ? normalizeProjectAllowedModelIds(allowedModelIds)
+    : [];
+  const effectiveMode = normalizedMode === 'selected' && normalizedModelIds.length === 0
+    ? 'none'
+    : normalizedMode;
+
+  db.transaction(() => {
+    db.query(`
+      UPDATE projects
+      SET model_access_mode = $mode, updated_at = $updatedAt
+      WHERE id = $projectId
+    `).run({
+      $projectId: projectId,
+      $mode: effectiveMode,
+      $updatedAt: Date.now(),
+    });
+
+    db.query(`DELETE FROM project_allowed_models WHERE project_id = $projectId`).run({
+      $projectId: projectId,
+    });
+
+    if (effectiveMode === 'selected') {
+      const insertAllowedModel = db.query(`
+        INSERT INTO project_allowed_models (project_id, model_id, created_at)
+        VALUES ($projectId, $modelId, $createdAt)
+      `);
+      const createdAt = Date.now();
+      for (const modelId of normalizedModelIds) {
+        insertAllowedModel.run({
+          $projectId: projectId,
+          $modelId: modelId,
+          $createdAt: createdAt,
+        });
+      }
+    }
+  })();
+}
+
+export function getProjectModelAccess(projectId: string | null | undefined): {
+  mode: ProjectModelAccessMode;
+  allowedModelIds: string[];
+} {
+  const normalizedProjectId = projectId?.trim();
+  if (!normalizedProjectId) {
+    return { mode: 'all', allowedModelIds: [] };
+  }
+
+  const project = getProjectById(normalizedProjectId);
+  if (!project) {
+    return { mode: 'all', allowedModelIds: [] };
+  }
+
+  return {
+    mode: project.modelAccessMode,
+    allowedModelIds: project.allowedModelIds,
   };
 }
 
@@ -901,13 +995,10 @@ function getMonthRange(now: number = Date.now()): { start: number; end: number; 
 
 function computeUsageStatus(
   requestCount: number,
-  estimatedCostUsd: number,
   monthlyRequestQuota: number | null,
-  monthlyBudgetUsd: number | null,
 ): 'ok' | 'warning' | 'exceeded' {
   const requestRatio = monthlyRequestQuota && monthlyRequestQuota > 0 ? requestCount / monthlyRequestQuota : 0;
-  const budgetRatio = monthlyBudgetUsd && monthlyBudgetUsd > 0 ? estimatedCostUsd / monthlyBudgetUsd : 0;
-  const ratio = Math.max(requestRatio, budgetRatio);
+  const ratio = requestRatio;
 
   if (ratio >= 1) {
     return 'exceeded';
@@ -1153,7 +1244,6 @@ export function listUsers(): UserRecord[] {
 
 export function updateUserProductSettings(userId: string, input: {
   monthlyRequestQuota?: number | null;
-  monthlyBudgetUsd?: number | null;
   onboardingCompletedAt?: number | null;
 }): UserRecord | null {
   const existing = db.query(`SELECT * FROM users WHERE id = $id LIMIT 1`).get({ $id: userId }) as UserRow | null;
@@ -1165,14 +1255,12 @@ export function updateUserProductSettings(userId: string, input: {
     UPDATE users
     SET
       monthly_request_quota = $monthlyRequestQuota,
-      monthly_budget_usd = $monthlyBudgetUsd,
       onboarding_completed_at = $onboardingCompletedAt,
       updated_at = $updatedAt
     WHERE id = $id
   `).run({
     $id: userId,
     $monthlyRequestQuota: input.monthlyRequestQuota ?? existing.monthly_request_quota ?? null,
-    $monthlyBudgetUsd: input.monthlyBudgetUsd ?? existing.monthly_budget_usd ?? null,
     $onboardingCompletedAt: input.onboardingCompletedAt ?? existing.onboarding_completed_at ?? null,
     $updatedAt: Date.now(),
   });
@@ -1220,7 +1308,8 @@ export function createProject(input: {
   id: string;
   name: string;
   description?: string | null;
-  budgetMonthlyUsd?: number | null;
+  modelAccessMode?: ProjectModelAccessMode;
+  allowedModelIds?: string[];
   requestQuotaMonthly?: number | null;
   ownerUserId?: string | null;
 }): ProjectRecord {
@@ -1236,20 +1325,22 @@ export function createProject(input: {
 
   db.query(`
     INSERT INTO projects (
-      id, name, slug, description, budget_monthly_usd, request_quota_monthly, is_active, created_at, updated_at
+      id, name, slug, description, model_access_mode, request_quota_monthly, is_active, created_at, updated_at
     )
     VALUES (
-      $id, $name, $slug, $description, $budgetMonthlyUsd, $requestQuotaMonthly, 1, $now, $now
+      $id, $name, $slug, $description, $modelAccessMode, $requestQuotaMonthly, 1, $now, $now
     )
   `).run({
     $id: input.id,
     $name: input.name.trim(),
     $slug: slug,
     $description: input.description?.trim() || null,
-    $budgetMonthlyUsd: input.budgetMonthlyUsd ?? null,
+    $modelAccessMode: normalizeProjectModelAccessMode(input.modelAccessMode),
     $requestQuotaMonthly: input.requestQuotaMonthly ?? null,
     $now: now,
   });
+
+  setProjectModelAccess(input.id, input.modelAccessMode ?? 'all', input.allowedModelIds ?? []);
 
   if (input.ownerUserId) {
     db.query(`
@@ -1267,12 +1358,17 @@ export function createProject(input: {
     throw new Error('Failed to create project');
   }
 
-  return toProjectRecord(row);
+  const allowedModels = getProjectAllowedModelsMap([row.id]);
+  return toProjectRecord(row, allowedModels.get(row.id) ?? []);
 }
 
 export function getProjectById(projectId: string): ProjectRecord | null {
   const row = db.query(`SELECT * FROM projects WHERE id = $id LIMIT 1`).get({ $id: projectId }) as ProjectRow | null;
-  return row ? toProjectRecord(row) : null;
+  if (!row) {
+    return null;
+  }
+  const allowedModels = getProjectAllowedModelsMap([row.id]);
+  return toProjectRecord(row, allowedModels.get(row.id) ?? []);
 }
 
 export function listProjectsForUser(userId: string): ProjectRecord[] {
@@ -1283,7 +1379,8 @@ export function listProjectsForUser(userId: string): ProjectRecord[] {
     WHERE pm.user_id = $userId
     ORDER BY p.created_at ASC
   `).all({ $userId: userId }) as Array<ProjectRow & { role: 'owner' | 'member' }>;
-  return rows.map(toProjectRecord);
+  const allowedModels = getProjectAllowedModelsMap(rows.map((row) => row.id));
+  return rows.map((row) => toProjectRecord(row, allowedModels.get(row.id) ?? []));
 }
 
 export function listAllProjects(): ProjectRecord[] {
@@ -1291,13 +1388,15 @@ export function listAllProjects(): ProjectRecord[] {
     SELECT * FROM projects
     ORDER BY created_at ASC
   `).all() as ProjectRow[];
-  return rows.map(toProjectRecord);
+  const allowedModels = getProjectAllowedModelsMap(rows.map((row) => row.id));
+  return rows.map((row) => toProjectRecord(row, allowedModels.get(row.id) ?? []));
 }
 
 export function updateProject(projectId: string, input: {
   name?: string;
   description?: string | null;
-  budgetMonthlyUsd?: number | null;
+  modelAccessMode?: ProjectModelAccessMode;
+  allowedModelIds?: string[];
   requestQuotaMonthly?: number | null;
   isActive?: boolean;
 }): ProjectRecord | null {
@@ -1311,7 +1410,7 @@ export function updateProject(projectId: string, input: {
     SET
       name = $name,
       description = $description,
-      budget_monthly_usd = $budgetMonthlyUsd,
+      model_access_mode = $modelAccessMode,
       request_quota_monthly = $requestQuotaMonthly,
       is_active = $isActive,
       updated_at = $updatedAt
@@ -1320,11 +1419,19 @@ export function updateProject(projectId: string, input: {
     $id: projectId,
     $name: input.name?.trim() || current.name,
     $description: input.description === undefined ? current.description : (input.description?.trim() || null),
-    $budgetMonthlyUsd: input.budgetMonthlyUsd === undefined ? current.budget_monthly_usd : input.budgetMonthlyUsd,
+    $modelAccessMode: input.modelAccessMode === undefined ? current.model_access_mode : normalizeProjectModelAccessMode(input.modelAccessMode),
     $requestQuotaMonthly: input.requestQuotaMonthly === undefined ? current.request_quota_monthly : input.requestQuotaMonthly,
     $isActive: input.isActive === undefined ? current.is_active : (input.isActive ? 1 : 0),
     $updatedAt: Date.now(),
   });
+
+  if (input.modelAccessMode !== undefined || input.allowedModelIds !== undefined) {
+    setProjectModelAccess(
+      projectId,
+      input.modelAccessMode === undefined ? current.model_access_mode : input.modelAccessMode,
+      input.allowedModelIds,
+    );
+  }
 
   return getProjectById(projectId);
 }
@@ -1551,7 +1658,6 @@ export function getSessionByTokenHash(tokenHash: string): SessionWithUser | null
       u.role,
       u.is_active,
       u.monthly_request_quota,
-      u.monthly_budget_usd,
       u.onboarding_completed_at,
       u.created_at AS user_created_at,
       u.updated_at AS user_updated_at,
@@ -1585,7 +1691,6 @@ export function getSessionByTokenHash(tokenHash: string): SessionWithUser | null
       role: row.role,
       isActive: row.is_active === 1,
       monthlyRequestQuota: row.monthly_request_quota,
-      monthlyBudgetUsd: row.monthly_budget_usd,
       onboardingCompletedAt: row.onboarding_completed_at,
       createdAt: row.user_created_at,
       updatedAt: row.user_updated_at,
@@ -1694,7 +1799,6 @@ export function getApiKeyAuthByHash(keyHash: string): ApiKeyAuthRecord | null {
       u.role,
       u.is_active AS user_is_active,
       u.monthly_request_quota,
-      u.monthly_budget_usd,
       u.onboarding_completed_at,
       u.created_at AS user_created_at,
       u.updated_at AS user_updated_at,
@@ -1730,7 +1834,6 @@ export function getApiKeyAuthByHash(keyHash: string): ApiKeyAuthRecord | null {
       role: row.role,
       isActive: row.user_is_active === 1,
       monthlyRequestQuota: row.monthly_request_quota,
-      monthlyBudgetUsd: row.monthly_budget_usd,
       onboardingCompletedAt: row.onboarding_completed_at,
       createdAt: row.user_created_at,
       updatedAt: row.user_updated_at,
@@ -2319,13 +2422,13 @@ export function recordRequestMetric(input: RequestMetricInput): void {
   db.query(`
     INSERT INTO request_metrics (
       id, user_id, api_key_id, project_id, method, path, request_type, provider, model, status_code,
-      duration_ms, prompt_tokens, completion_tokens, total_tokens, audio_seconds, estimated_cost_usd,
-      error_message, source_ip, usage_source, created_at
+      duration_ms, prompt_tokens, completion_tokens, total_tokens, audio_seconds, error_message,
+      source_ip, usage_source, created_at
     )
     VALUES (
       $id, $userId, $apiKeyId, $projectId, $method, $path, $requestType, $provider, $model, $statusCode,
-      $durationMs, $promptTokens, $completionTokens, $totalTokens, $audioSeconds, $estimatedCostUsd,
-      $errorMessage, $sourceIp, $usageSource, $createdAt
+      $durationMs, $promptTokens, $completionTokens, $totalTokens, $audioSeconds, $errorMessage,
+      $sourceIp, $usageSource, $createdAt
     )
   `).run({
     $id: input.id,
@@ -2343,7 +2446,6 @@ export function recordRequestMetric(input: RequestMetricInput): void {
     $completionTokens: input.completionTokens ?? 0,
     $totalTokens: input.totalTokens ?? 0,
     $audioSeconds: input.audioSeconds ?? 0,
-    $estimatedCostUsd: input.estimatedCostUsd ?? 0,
     $errorMessage: input.errorMessage ?? null,
     $sourceIp: input.sourceIp ?? null,
     $usageSource: input.usageSource ?? 'estimated',
@@ -2435,34 +2537,6 @@ export function checkAndIncrementRequestRateLimit(
     };
   }
 }
-
-
-export function getSpendSummary(scope?: RequestMetricsScope): SpendSummary {
-  const range = getMonthRange();
-  const userScope = buildRequestMetricsUserScope(scope);
-  const row = db.query(`
-    SELECT COALESCE(SUM(estimated_cost_usd), 0) AS total_cost
-    FROM request_metrics
-    WHERE created_at >= $start AND created_at < $end${userScope.clause}
-  `).get({
-    $start: range.start,
-    $end: range.end,
-    ...userScope.params,
-  }) as { total_cost: number | null } | null;
-
-  const currentMonthUsd = Number((row?.total_cost ?? 0).toFixed(6));
-  const projectedMonthUsd = Number((
-    range.dayOfMonth > 0
-      ? (currentMonthUsd / range.dayOfMonth) * range.daysInMonth
-      : currentMonthUsd
-  ).toFixed(6));
-
-  return {
-    currentMonthUsd,
-    projectedMonthUsd,
-  };
-}
-
 export function getTokenSummary(scope?: RequestMetricsScope): TokenSummary {
   const range = getMonthRange();
   const userScope = buildRequestMetricsUserScope(scope);
@@ -2535,7 +2609,6 @@ export function getRecentErrors(limit: number = 15, scope?: RequestMetricsScope)
       prompt_tokens,
       completion_tokens,
       total_tokens,
-      estimated_cost_usd,
       error_message,
       created_at
     FROM request_metrics
@@ -2557,7 +2630,6 @@ export function getRecentErrors(limit: number = 15, scope?: RequestMetricsScope)
     prompt_tokens: number | null;
     completion_tokens: number | null;
     total_tokens: number | null;
-    estimated_cost_usd: number | null;
     error_message: string | null;
     created_at: number;
   }>;
@@ -2573,7 +2645,6 @@ export function getRecentErrors(limit: number = 15, scope?: RequestMetricsScope)
     promptTokens: row.prompt_tokens ?? 0,
     completionTokens: row.completion_tokens ?? 0,
     totalTokens: row.total_tokens ?? 0,
-    estimatedCostUsd: row.estimated_cost_usd ?? 0,
     errorMessage: row.error_message,
     createdAt: row.created_at,
   }));
@@ -2590,12 +2661,10 @@ export function getUserUsageSummaries(scope?: RequestMetricsScope): UsageSummary
       u.name,
       u.email,
       u.monthly_request_quota,
-      u.monthly_budget_usd,
       COUNT(r.id) AS request_count,
       COALESCE(SUM(r.prompt_tokens), 0) AS prompt_tokens,
       COALESCE(SUM(r.completion_tokens), 0) AS completion_tokens,
-      COALESCE(SUM(r.total_tokens), 0) AS total_tokens,
-      COALESCE(SUM(r.estimated_cost_usd), 0) AS estimated_cost_usd
+      COALESCE(SUM(r.total_tokens), 0) AS total_tokens
     FROM users u
     LEFT JOIN request_metrics r
       ON r.user_id = u.id
@@ -2613,12 +2682,10 @@ export function getUserUsageSummaries(scope?: RequestMetricsScope): UsageSummary
     name: string;
     email: string;
     monthly_request_quota: number | null;
-    monthly_budget_usd: number | null;
     request_count: number;
     prompt_tokens: number;
     completion_tokens: number;
     total_tokens: number;
-    estimated_cost_usd: number;
   }>;
 
   return rows.map((row) => ({
@@ -2629,15 +2696,8 @@ export function getUserUsageSummaries(scope?: RequestMetricsScope): UsageSummary
     promptTokens: row.prompt_tokens ?? 0,
     completionTokens: row.completion_tokens ?? 0,
     totalTokens: row.total_tokens ?? 0,
-    estimatedCostUsd: Number((row.estimated_cost_usd ?? 0).toFixed(6)),
     monthlyRequestQuota: row.monthly_request_quota,
-    monthlyBudgetUsd: row.monthly_budget_usd,
-    status: computeUsageStatus(
-      row.request_count,
-      row.estimated_cost_usd ?? 0,
-      row.monthly_request_quota,
-      row.monthly_budget_usd,
-    ),
+    status: computeUsageStatus(row.request_count, row.monthly_request_quota),
   }));
 }
 
@@ -2650,12 +2710,10 @@ export function getProjectUsageSummaries(scope?: RequestMetricsScope): UsageSumm
       p.id,
       p.name,
       p.request_quota_monthly,
-      p.budget_monthly_usd,
       COUNT(r.id) AS request_count,
       COALESCE(SUM(r.prompt_tokens), 0) AS prompt_tokens,
       COALESCE(SUM(r.completion_tokens), 0) AS completion_tokens,
-      COALESCE(SUM(r.total_tokens), 0) AS total_tokens,
-      COALESCE(SUM(r.estimated_cost_usd), 0) AS estimated_cost_usd
+      COALESCE(SUM(r.total_tokens), 0) AS total_tokens
     FROM projects p
     LEFT JOIN request_metrics r
       ON r.project_id = p.id
@@ -2674,12 +2732,10 @@ export function getProjectUsageSummaries(scope?: RequestMetricsScope): UsageSumm
     id: string;
     name: string;
     request_quota_monthly: number | null;
-    budget_monthly_usd: number | null;
     request_count: number;
     prompt_tokens: number;
     completion_tokens: number;
     total_tokens: number;
-    estimated_cost_usd: number;
   }>;
 
   return rows.map((row) => ({
@@ -2689,15 +2745,8 @@ export function getProjectUsageSummaries(scope?: RequestMetricsScope): UsageSumm
     promptTokens: row.prompt_tokens ?? 0,
     completionTokens: row.completion_tokens ?? 0,
     totalTokens: row.total_tokens ?? 0,
-    estimatedCostUsd: Number((row.estimated_cost_usd ?? 0).toFixed(6)),
     monthlyRequestQuota: row.request_quota_monthly,
-    monthlyBudgetUsd: row.budget_monthly_usd,
-    status: computeUsageStatus(
-      row.request_count,
-      row.estimated_cost_usd ?? 0,
-      row.request_quota_monthly,
-      row.budget_monthly_usd,
-    ),
+    status: computeUsageStatus(row.request_count, row.request_quota_monthly),
   }));
 }
 
@@ -2732,7 +2781,6 @@ export function getDashboardMetrics(scope?: RequestMetricsScope): DashboardMetri
       SUM(CASE WHEN status_code BETWEEN 200 AND 399 THEN 1 ELSE 0 END) AS success_count,
       SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) AS error_count,
       ROUND(AVG(duration_ms), 1) AS avg_duration_ms,
-      COALESCE(SUM(estimated_cost_usd), 0) AS total_cost_usd,
       MAX(created_at) AS last_request_at
     FROM request_metrics
     WHERE provider IS NOT NULL AND provider <> ''${userScope.clause}
@@ -2749,7 +2797,6 @@ export function getDashboardMetrics(scope?: RequestMetricsScope): DashboardMetri
     success_count: number;
     error_count: number;
     avg_duration_ms: number | null;
-    total_cost_usd: number | null;
     last_request_at: number | null;
   }[];
 
@@ -2764,7 +2811,6 @@ export function getDashboardMetrics(scope?: RequestMetricsScope): DashboardMetri
       SUM(CASE WHEN status_code BETWEEN 200 AND 399 THEN 1 ELSE 0 END) AS success_count,
       SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) AS error_count,
       ROUND(AVG(duration_ms), 1) AS avg_duration_ms,
-      COALESCE(SUM(estimated_cost_usd), 0) AS total_cost_usd,
       MAX(created_at) AS last_request_at
     FROM request_metrics
     WHERE provider IS NOT NULL AND provider <> '' AND model IS NOT NULL AND model <> ''${userScope.clause}
@@ -2783,7 +2829,6 @@ export function getDashboardMetrics(scope?: RequestMetricsScope): DashboardMetri
     success_count: number;
     error_count: number;
     avg_duration_ms: number | null;
-    total_cost_usd: number | null;
     last_request_at: number | null;
   }[];
 
@@ -2799,7 +2844,6 @@ export function getDashboardMetrics(scope?: RequestMetricsScope): DashboardMetri
       prompt_tokens,
       completion_tokens,
       total_tokens,
-      estimated_cost_usd,
       error_message,
       created_at
     FROM request_metrics
@@ -2819,7 +2863,6 @@ export function getDashboardMetrics(scope?: RequestMetricsScope): DashboardMetri
     prompt_tokens: number | null;
     completion_tokens: number | null;
     total_tokens: number | null;
-    estimated_cost_usd: number | null;
     error_message: string | null;
     created_at: number;
   }[];
@@ -2925,7 +2968,6 @@ export function getDashboardMetrics(scope?: RequestMetricsScope): DashboardMetri
       errorCount: row.error_count ?? 0,
       avgDurationMs: row.avg_duration_ms ?? 0,
       lastRequestAt: row.last_request_at,
-      totalCostUsd: Number((row.total_cost_usd ?? 0).toFixed(6)),
     })),
     models: modelRows.map((row) => ({
       provider: row.provider,
@@ -2938,7 +2980,6 @@ export function getDashboardMetrics(scope?: RequestMetricsScope): DashboardMetri
       errorCount: row.error_count ?? 0,
       avgDurationMs: row.avg_duration_ms ?? 0,
       lastRequestAt: row.last_request_at,
-      totalCostUsd: Number((row.total_cost_usd ?? 0).toFixed(6)),
     })),
     recent: recentRows.map((row) => ({
       method: row.method,
@@ -2951,7 +2992,6 @@ export function getDashboardMetrics(scope?: RequestMetricsScope): DashboardMetri
       promptTokens: row.prompt_tokens ?? 0,
       completionTokens: row.completion_tokens ?? 0,
       totalTokens: row.total_tokens ?? 0,
-      estimatedCostUsd: row.estimated_cost_usd ?? 0,
       errorMessage: row.error_message,
       createdAt: row.created_at,
     })),
