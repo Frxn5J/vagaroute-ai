@@ -1878,6 +1878,22 @@ export function setApiKeyActive(apiKeyId: string, isActive: boolean): void {
   `).run({ $id: apiKeyId, $isActive: isActive ? 1 : 0 });
 }
 
+/**
+ * Rotates the raw secret of an existing API key entry.
+ * The old key becomes invalid immediately; the caller is responsible for
+ * returning the new rawKey to the user exactly once.
+ */
+export function rotateUserApiKey(apiKeyId: string, newKeyHash: string, newKeyPrefix: string): UserApiKeyRecord | null {
+  db.query(`
+    UPDATE user_api_keys
+    SET key_hash = $keyHash, key_prefix = $keyPrefix
+    WHERE id = $id
+  `).run({ $id: apiKeyId, $keyHash: newKeyHash, $keyPrefix: newKeyPrefix });
+
+  return getApiKeyById(apiKeyId);
+}
+
+
 export function createServiceApiKey(input: {
   id: string;
   provider: string;

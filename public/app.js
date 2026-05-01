@@ -100,6 +100,11 @@ const state = {
   cpDraft: createEmptyCustomProviderDraft(),
   cpEditing: null,
   cpDiscovery: createEmptyCustomProviderDiscoveryState(),
+  // Quick Start state
+  qsAgent: 'opencode',
+  qsSelectedModels: [],
+  qsCopied: null,
+  qsProviderFilter: '',
 };
 
 function getSettingsPages() {
@@ -3387,6 +3392,7 @@ function renderSettingsMultiPage() {
                 <th>Rate limit</th>
                 <th>Estado</th>
                 <th>Uso</th>
+                <th>Acciones</th>
               </tr>
             </thead>
             <tbody>
@@ -3394,7 +3400,7 @@ function renderSettingsMultiPage() {
                 <tr>
                   <td>${escapeHtml(item.name)}</td>
                   <td>${escapeHtml(item.projectId ? projectNameById.get(item.projectId) || item.projectId : 'Sin proyecto')}</td>
-                  <td>${escapeHtml(item.keyPrefix)}</td>
+                  <td style="font-family: var(--font-mono); font-size: 0.82rem;">${escapeHtml(item.keyPrefix)}...</td>
                   <td>
                     ${isAdminUser ? `
                       <form class="inline-form" data-form="update-api-key">
@@ -3410,11 +3416,44 @@ function renderSettingsMultiPage() {
                     </button>
                   </td>
                   <td>${formatNumber(item.totalRequests)}</td>
+                  <td>
+                    <button
+                      class="ghost-button"
+                      type="button"
+                      data-action="regenerate-api-key"
+                      data-id="${escapeHtml(item.id)}"
+                      data-name="${escapeHtml(item.name)}"
+                      title="Genera una nueva key — la actual deja de funcionar"
+                      style="font-size: 0.78rem; padding: 0.25rem 0.6rem;"
+                    >Regenerar</button>
+                  </td>
                 </tr>
-              `).join('') || '<tr><td colspan="6">Sin API keys.</td></tr>'}
+              `).join('') || '<tr><td colspan="7">Sin API keys.</td></tr>'}
             </tbody>
           </table>
         </div>
+        ${state.lastCreatedApiKey ? `
+          <div class="revealed-key-banner" style="margin-top: 1rem; padding: 1rem; border-radius: var(--radius); border: 1px solid rgba(196,135,90,0.4); background: rgba(196,135,90,0.07);">
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin-bottom: 0.5rem;">
+              <span style="font-size: 0.85rem; font-weight: 600; color: var(--accent);">🔑 Tu API key — guárdala ahora, no se volverá a mostrar</span>
+              <button
+                class="ghost-button"
+                type="button"
+                data-action="dismiss-revealed-key"
+                style="font-size: 0.75rem; padding: 0.2rem 0.5rem; color: var(--muted);"
+              >Cerrar</button>
+            </div>
+            <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+              <code style="font-family: var(--font-mono); font-size: 0.82rem; background: var(--bg-soft); padding: 0.4rem 0.7rem; border-radius: 4px; word-break: break-all; flex: 1;">${escapeHtml(state.lastCreatedApiKey)}</code>
+              <button
+                class="secondary-button"
+                type="button"
+                data-action="copy-revealed-key"
+                style="font-size: 0.78rem; flex-shrink: 0;"
+              >${state.qsCopied === 'revealedkey' ? '✓ Copiada!' : 'Copiar'}</button>
+            </div>
+          </div>
+        ` : ''}
       </article>
     `;
   }
@@ -3834,16 +3873,588 @@ function renderSettingsMultiPage() {
   `;
 }
 
+// ─── Quick Start ──────────────────────────────────────────────────────────────
+
+function getQuickStartAgents() {
+  return [
+    {
+      id: 'opencode',
+      name: 'opencode',
+      icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>',
+      description: 'Agente de codigo en terminal. Soporta multiples modelos configurables en JSON.',
+      multiModel: true,
+      configType: 'json-file',
+      configFile: '.opencode.json',
+      configNote: 'Requiere dos archivos: auth.json global y .opencode.json en tu proyecto.',
+    },
+    {
+      id: 'cline',
+      name: 'Cline (VS Code)',
+      icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"></path><rect width="16" height="12" x="4" y="8" rx="2"></rect><path d="M2 14h2"></path><path d="M20 14h2"></path><path d="M15 13v2"></path><path d="M9 13v2"></path></svg>',
+      description: 'Extension de VS Code. Un solo modelo por configuracion (OpenAI Compatible).',
+      multiModel: false,
+      configType: 'ui-steps',
+      configNote: 'Configura desde la UI de VS Code — no requiere editar archivos.',
+    },
+    {
+      id: 'continue',
+      name: 'Continue.dev',
+      icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"></path><path d="M16 21v-5h5"></path></svg>',
+      description: 'Extension de VS Code / JetBrains. Soporta multiples modelos en config.yaml.',
+      multiModel: true,
+      configType: 'yaml-file',
+      configFile: '~/.continue/config.yaml',
+      configNote: 'Archivo global en ~/.continue/config.yaml o local en .continue/config.yaml',
+    },
+    {
+      id: 'aider',
+      name: 'Aider',
+      icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path></svg>',
+      description: 'Agente de codigo en terminal. Un modelo activo por sesion, via .env o flags.',
+      multiModel: false,
+      configType: 'env-file',
+      configFile: '.aider.conf.yml',
+      configNote: 'Crea un archivo .aider.conf.yml en la raiz de tu proyecto.',
+    },
+    {
+      id: 'cursor',
+      name: 'Cursor IDE',
+      icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m4 4 7.07 17 2.51-7.39L21 11.07z"></path></svg>',
+      description: 'IDE con AI integrada. Configuracion via UI — no edita archivos de texto.',
+      multiModel: false,
+      configType: 'ui-steps',
+      configNote: 'Configura desde Cursor Settings > Models — no requiere editar archivos.',
+    },
+    {
+      id: 'copilot',
+      name: 'GitHub Copilot',
+      icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"></path><path d="M9 18c-4.51 2-5-2-7-2"></path></svg>',
+      description: 'Copilot nativo de VS Code. Requiere settings.json o extension OAIProvider.',
+      multiModel: false,
+      configType: 'json-file',
+      configFile: '.vscode/settings.json',
+      configNote: 'Agrega esta clave al settings.json de tu proyecto o al global de VS Code.',
+    },
+  ];
+}
+
+
+function getQuickStartBaseUrl() {
+  return window.location.origin + '/v1';
+}
+
+function getQuickStartApiKey() {
+  // Si tenemos una key recien creada en sesion, mostrarla completa
+  if (state.lastCreatedApiKey) return state.lastCreatedApiKey;
+  // Fallback: hint enmascarado
+  const keys = state.dashboard?.apiKeys || [];
+  const active = keys.find((k) => k.isActive);
+  return active ? active.hint || '' : '';
+}
+
+function getQuickStartModels() {
+  return (state.dashboard?.pool?.models || [])
+    .filter((m) => !m.paidOnly)
+    .map((m) => ({ id: m.id, provider: String(m.provider || 'custom') }));
+}
+
+function buildOpenCodeConfig(selectedModels, baseUrl, apiKey) {
+  const models = selectedModels.length > 0 ? selectedModels : ['auto'];
+  const firstModel = models[0];
+
+  const authConfig = {
+    "vagaroute-ai": {
+      "type": "api",
+      "key": apiKey,
+      "baseURL": baseUrl,
+      "models": models
+    }
+  };
+
+  const opencodeConfig = {
+    $schema: 'https://opencode.ai/config.json',
+    model: `vagaroute-ai/${firstModel}`,
+    provider: {
+      'vagaroute-ai': {
+        name: 'VagaRoute AI',
+        api: 'openai',
+        models: models,
+      },
+    },
+  };
+
+  return {
+    authJson: JSON.stringify(authConfig, null, 2),
+    opencodeJson: JSON.stringify(opencodeConfig, null, 2)
+  };
+}
+
+function buildContinueConfig(selectedModels, baseUrl, apiKey) {
+  const models = selectedModels.length > 0 ? selectedModels : ['auto'];
+  const modelEntries = models.map((m) => ({
+    name: m,
+    provider: 'openai',
+    model: m,
+    apiKey: apiKey,
+    apiBase: baseUrl,
+  }));
+
+  const yaml = `models:\n${modelEntries.map((entry) => `  - name: "${entry.name}"\n    provider: openai\n    model: "${entry.model}"\n    apiKey: "${entry.apiKey}"\n    apiBase: "${entry.apiBase}"`).join('\n')}`;
+  return yaml;
+}
+
+function buildAiderConfig(selectedModel, baseUrl, apiKey) {
+  const model = selectedModel || 'auto';
+  return `# .aider.conf.yml — Configuracion de Aider para VagaRoute AI\n# Coloca este archivo en la raiz de tu proyecto\n\nmodel: openai/${model}\nopenai-api-base: ${baseUrl}\nopenai-api-key: ${apiKey}\n\n# Metadata opcional para modelos desconocidos (crea .aider.model.metadata.json)\n# {\n#   "openai/${model}": {\n#     "max_tokens": 8192,\n#     "max_input_tokens": 128000,\n#     "max_output_tokens": 8192,\n#     "input_cost_per_token": 0.0,\n#     "output_cost_per_token": 0.0,\n#     "mode": "chat"\n#   }\n# }`;
+}
+
+function buildCopilotSettingsJson(selectedModel, baseUrl, apiKey) {
+  const model = selectedModel || 'auto';
+  const settings = {
+    'github.copilot.advanced': {
+      'authProvider': 'github',
+    },
+    'github.copilot.chat.customOAIModels': [
+      {
+        id: model,
+        name: `VagaRoute AI — ${model}`,
+        baseUrl: baseUrl,
+        apiKey: apiKey,
+        supportsToolCalls: true,
+        supportsVision: false,
+      },
+    ],
+  };
+  return JSON.stringify(settings, null, 2);
+}
+
+function buildClineSteps(selectedModel, baseUrl, apiKey) {
+  const model = selectedModel || 'auto';
+  return [
+    { step: '1', label: 'Abre VS Code y ve al panel de Cline en la barra lateral.', code: null },
+    { step: '2', label: 'Haz clic en el icono ⚙️ (configuracion) en la esquina superior derecha del panel.', code: null },
+    { step: '3', label: 'Selecciona API Provider:', code: 'OpenAI Compatible' },
+    { step: '4', label: 'Ingresa la Base URL:', code: baseUrl },
+    { step: '5', label: 'Ingresa tu API Key:', code: apiKey },
+    { step: '6', label: 'Ingresa el Model ID:', code: model },
+    { step: '7', label: 'Haz clic en Done / Save.', code: null },
+  ];
+}
+
+function buildCursorSteps(selectedModel, baseUrl, apiKey) {
+  const model = selectedModel || 'auto';
+  return [
+    { step: '1', label: 'Abre Cursor Settings con Ctrl+Shift+J (o Cmd+Shift+J en Mac).', code: null },
+    { step: '2', label: 'Ve a la pestana Models.', code: null },
+    { step: '3', label: 'Haz clic en Add Model (+) e ingresa el nombre del modelo:', code: model },
+    { step: '4', label: 'Baja a la seccion OpenAI API Key e ingresa tu API Key:', code: apiKey },
+    { step: '5', label: 'Activa la opcion Override OpenAI Base URL e ingresa:', code: baseUrl },
+    { step: '6', label: 'Haz clic en Verify para confirmar la conexion.', code: null },
+  ];
+}
+
+function renderQuickStartStepList(steps) {
+  return `
+    <div class="qs-steps">
+      ${steps.map((step) => `
+        <div class="qs-step">
+          <span class="qs-step-num">${escapeHtml(step.step)}</span>
+          <div class="qs-step-body">
+            <p>${escapeHtml(step.label)}</p>
+            ${step.code ? `
+              <div class="qs-code-row">
+                <code class="qs-inline-code">${escapeHtml(step.code)}</code>
+                <button
+                  class="ghost-button"
+                  type="button"
+                  data-action="qs-copy"
+                  data-qs-text="${escapeHtml(step.code)}"
+                  style="padding: 0.2rem 0.6rem; font-size: 0.75rem;"
+                >${state.qsCopied === step.code ? '✓ Copiado' : 'Copiar'}</button>
+              </div>
+            ` : ''}
+          </div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+function renderQuickStartConfigBlock(label, content, copyId) {
+  const isCopied = state.qsCopied === copyId;
+  return `
+    <div class="qs-config-block">
+      <div class="qs-config-header">
+        <span class="qs-config-label">${escapeHtml(label)}</span>
+        <button
+          class="${isCopied ? 'secondary-button' : 'ghost-button'}"
+          type="button"
+          data-action="qs-copy"
+          data-qs-text="${escapeHtml(content)}"
+          data-qs-id="${escapeHtml(copyId)}"
+          style="padding: 0.3rem 0.8rem; font-size: 0.78rem;"
+        >${isCopied ? '✓ Copiado!' : 'Copiar todo'}</button>
+      </div>
+      <pre class="qs-pre"><code>${escapeHtml(content)}</code></pre>
+    </div>
+  `;
+}
+
+function renderQuickstart() {
+  const agents = getQuickStartAgents();
+  const selectedAgent = agents.find((a) => a.id === state.qsAgent) || agents[0];
+  const baseUrl = getQuickStartBaseUrl();
+  const apiKey = getQuickStartApiKey();
+  const allModelObjects = getQuickStartModels(); // [{id, provider}]
+  const allModelIds = allModelObjects.map((m) => m.id);
+  const selectedModels = state.qsSelectedModels;
+  const firstModel = selectedModels[0] || allModelIds[0] || 'auto';
+  const apiKeyHint = !state.lastCreatedApiKey && !apiKey;
+
+  let outputSection = '';
+
+  if (selectedAgent.id === 'opencode') {
+    const configContent = buildOpenCodeConfig(
+      selectedModels.length > 0 ? selectedModels : allModelIds.slice(0, 5),
+      baseUrl, apiKey,
+    );
+    outputSection = `
+      <p class="muted" style="margin-bottom: 1rem;">
+        Selecciona los modelos que quieres incluir en tu configuración de opencode.
+      </p>
+      ${renderQuickStartModelPicker(allModelObjects, selectedModels, true)}
+      <div style="margin-top: 1.5rem;">
+        <h4 style="margin-bottom: 0.5rem; font-size: 0.9rem;">1. Autenticación</h4>
+        <p class="muted" style="margin-bottom: 1rem; font-size: 0.85rem;">Copia este contenido en <code>~/.local/share/opencode/auth.json</code> para guardar tus credenciales de forma segura.</p>
+        ${renderQuickStartConfigBlock('~/.local/share/opencode/auth.json', configContent.authJson, 'opencode-auth')}
+      </div>
+      <div style="margin-top: 1.5rem;">
+        <h4 style="margin-bottom: 0.5rem; font-size: 0.9rem;">2. Configuración del Proyecto</h4>
+        <p class="muted" style="margin-bottom: 1rem; font-size: 0.85rem;">Copia este bloque en tu <code>${escapeHtml(selectedAgent.configFile)}</code>.</p>
+        ${renderQuickStartConfigBlock(selectedAgent.configFile, configContent.opencodeJson, 'opencode-config')}
+      </div>
+    `;
+  } else if (selectedAgent.id === 'continue') {
+    const configContent = buildContinueConfig(
+      selectedModels.length > 0 ? selectedModels : allModelIds.slice(0, 3),
+      baseUrl, apiKey,
+    );
+    outputSection = `
+      <p class="muted" style="margin-bottom: 1rem;">
+        Selecciona los modelos que quieres agregar a tu <code>config.yaml</code> de Continue.
+        Cada modelo se agrega como una entrada separada bajo la clave <code>models</code>.
+      </p>
+      ${renderQuickStartModelPicker(allModelObjects, selectedModels, true)}
+      ${renderQuickStartConfigBlock(selectedAgent.configFile, configContent, 'continue-config')}
+    `;
+  } else if (selectedAgent.id === 'aider') {
+    outputSection = `
+      <p class="muted" style="margin-bottom: 1rem;">
+        Aider usa un solo modelo activo por sesion. Selecciona el modelo principal.
+      </p>
+      ${renderQuickStartModelPicker(allModelObjects, selectedModels, false)}
+      ${renderQuickStartConfigBlock(selectedAgent.configFile, buildAiderConfig(firstModel, baseUrl, apiKey), 'aider-config')}
+      <div class="panel" style="margin-top: 1rem; padding: 1rem;">
+        <strong style="font-size: 0.85rem;">Alternativa: variables de entorno</strong>
+        <p class="muted">Puedes tambien exportar estas variables en tu shell antes de correr aider:</p>
+        ${renderQuickStartConfigBlock('.env (shell)', `OPENAI_API_BASE=${baseUrl}\nOPENAI_API_KEY=${apiKey}`, 'aider-env')}
+        <p class="muted" style="margin-top: 0.5rem;">Y luego ejecutar: <code>aider --model openai/${firstModel}</code></p>
+      </div>
+    `;
+  } else if (selectedAgent.id === 'copilot') {
+    outputSection = `
+      <p class="muted" style="margin-bottom: 1rem;">
+        Selecciona el modelo que quieres exponer en GitHub Copilot Chat.
+        Requiere configuracion en <code>.vscode/settings.json</code> o en settings globales de VS Code.
+      </p>
+      ${renderQuickStartModelPicker(allModelObjects, selectedModels, false)}
+      ${renderQuickStartConfigBlock(selectedAgent.configFile, buildCopilotSettingsJson(firstModel, baseUrl, apiKey), 'copilot-config')}
+      <div class="panel" style="margin-top: 1rem; padding: 1rem; border-left: 2px solid var(--warning, #f5a623);">
+        <strong style="font-size: 0.85rem; color: var(--warning, #f5a623);">Nota importante</strong>
+        <p class="muted">
+          La compatibilidad de Copilot con endpoints custom depende de la version del extension y del plan (Free/Pro).
+          Si tienes Copilot Business o Enterprise, puede estar restringido por politica de la organizacion.
+          Alternativa: usa la extension <strong>OAIProvider</strong> del marketplace de VS Code.
+        </p>
+      </div>
+    `;
+  } else if (selectedAgent.id === 'cline') {
+    const steps = buildClineSteps(firstModel, baseUrl, apiKey);
+    outputSection = `
+      <p class="muted" style="margin-bottom: 1rem;">
+        Cline se configura desde la UI de VS Code. Selecciona el modelo que usaras como default.
+      </p>
+      ${renderQuickStartModelPicker(allModelObjects, selectedModels, false)}
+      ${renderQuickStartStepList(steps)}
+    `;
+  } else if (selectedAgent.id === 'cursor') {
+    const steps = buildCursorSteps(firstModel, baseUrl, apiKey);
+    outputSection = `
+      <p class="muted" style="margin-bottom: 1rem;">
+        Cursor IDE se configura desde su panel de settings. Selecciona el modelo que registraras.
+      </p>
+      ${renderQuickStartModelPicker(allModelObjects, selectedModels, false)}
+      ${renderQuickStartStepList(steps)}
+      <div class="panel" style="margin-top: 1rem; padding: 1rem; border-left: 2px solid var(--accent);">
+        <strong style="font-size: 0.85rem;">Nota sobre modelo global</strong>
+        <p class="muted">
+          El Override de Base URL en Cursor es <strong>global</strong>: aplica a todos los modelos si esta activo.
+          Si necesitas alternar entre modelos de Cursor y tu gateway, desactiva el override cuando uses modelos nativos de Cursor.
+        </p>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="qs-shell">
+      <div class="qs-agent-bar">
+        ${agents.map((agent) => `
+          <button
+            class="qs-agent-btn ${state.qsAgent === agent.id ? 'active' : ''}"
+            type="button"
+            data-action="qs-pick-agent"
+            data-agent="${escapeHtml(agent.id)}"
+            title="${escapeHtml(agent.description)}"
+          >
+            <span class="qs-agent-icon">${agent.icon}</span>
+            <span class="qs-agent-name">${escapeHtml(agent.name)}</span>
+            ${agent.multiModel ? '<span class="qs-multi-badge" title="Soporta multiples modelos">multi</span>' : ''}
+          </button>
+        `).join('')}
+      </div>
+
+      <div class="qs-main">
+        <div class="qs-sidebar">
+          <div class="panel" style="padding: 1.25rem;">
+            <div class="qs-agent-header">
+              <span style="font-size: 2rem; line-height: 1;">${selectedAgent.icon}</span>
+              <div>
+                <strong style="font-size: 1.05rem;">${escapeHtml(selectedAgent.name)}</strong>
+                ${selectedAgent.multiModel
+                  ? '<span class="tag success" style="font-size: 0.7rem; margin-left: 0.4rem;">Multi-modelo</span>'
+                  : '<span class="tag" style="font-size: 0.7rem; margin-left: 0.4rem;">Modelo unico</span>'}
+              </div>
+            </div>
+            <p class="muted" style="margin: 0.75rem 0;">${escapeHtml(selectedAgent.description)}</p>
+            <div class="qs-info-grid">
+              ${selectedAgent.configFile ? `
+                <div>
+                  <span class="muted" style="font-size: 0.75rem;">Archivo</span>
+                  <code style="font-size: 0.78rem; display: block; margin-top: 0.2rem;">${escapeHtml(selectedAgent.configFile)}</code>
+                </div>
+              ` : ''}
+              <div>
+                <span class="muted" style="font-size: 0.75rem;">Tipo</span>
+                <span style="font-size: 0.82rem; display: block; margin-top: 0.2rem; text-transform: capitalize;">${escapeHtml(selectedAgent.configType.replace(/-/g, ' '))}</span>
+              </div>
+            </div>
+            ${selectedAgent.configNote ? `
+              <p class="muted" style="margin: 0.75rem 0 0; font-size: 0.78rem; border-top: 1px solid var(--border); padding-top: 0.75rem;">
+                ${escapeHtml(selectedAgent.configNote)}
+              </p>
+            ` : ''}
+          </div>
+
+          <div class="panel" style="padding: 1.25rem; margin-top: 1rem;">
+            <strong style="font-size: 0.85rem; display: block; margin-bottom: 0.75rem;">Tus credenciales</strong>
+            <div class="qs-cred-grid">
+              <div>
+                <span class="muted" style="font-size: 0.75rem;">Base URL</span>
+                <div class="qs-cred-row">
+                  <code style="font-size: 0.75rem; word-break: break-all;">${escapeHtml(baseUrl)}</code>
+                  <button
+                    class="ghost-button"
+                    type="button"
+                    data-action="qs-copy"
+                    data-qs-text="${escapeHtml(baseUrl)}"
+                    data-qs-id="baseurl"
+                    style="padding: 0.2rem 0.5rem; font-size: 0.7rem; flex-shrink: 0;"
+                  >${state.qsCopied === 'baseurl' ? '✓' : 'Copiar'}</button>
+                </div>
+              </div>
+              <div>
+                <span class="muted" style="font-size: 0.75rem;">API Key</span>
+                <div class="qs-cred-row">
+                  ${apiKey
+                    ? `<code style="font-size: 0.75rem; word-break: break-all; font-family: var(--font-mono);">${escapeHtml(apiKey)}</code>`
+                    : `<span class="muted" style="font-size: 0.75rem;">Crea una API key en Ajustes &gt; API keys para verla aqui.</span>`
+                  }
+                  ${apiKey ? `
+                    <button
+                      class="ghost-button"
+                      type="button"
+                      data-action="qs-copy"
+                      data-qs-text="${escapeHtml(apiKey)}"
+                      data-qs-id="apikey"
+                      style="padding: 0.2rem 0.5rem; font-size: 0.7rem; flex-shrink: 0;"
+                    >${state.qsCopied === 'apikey' ? '✓' : 'Copiar'}</button>
+                  ` : ''}
+                </div>
+                ${state.lastCreatedApiKey
+                  ? `<p style="font-size: 0.7rem; margin-top: 0.25rem; color: var(--accent);">⚠ Key visible solo en esta sesion. Guardala ahora.</p>`
+                  : apiKey
+                    ? `<p class="muted" style="font-size: 0.7rem; margin-top: 0.25rem;">Hint enmascarado. Crea una nueva key para verla completa.</p>`
+                    : ''
+                }
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="qs-content">
+          <div class="panel" style="padding: 1.5rem;">
+            <h3 style="margin: 0 0 0.25rem;">Configuracion para ${escapeHtml(selectedAgent.name)}</h3>
+            <p class="muted" style="margin: 0 0 1.5rem;">
+              ${selectedAgent.configType === 'ui-steps'
+                ? 'Sigue estos pasos en la interfaz del agente.'
+                : `Copia este contenido en <code>${escapeHtml(selectedAgent.configFile || 'el archivo indicado')}</code>.`}
+            </p>
+            ${outputSection}
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderQuickStartModelPicker(allModelObjects, selectedModels, multi) {
+  // allModelObjects: [{id, provider}]
+  // selectedModels: [id, ...]
+  if (allModelObjects.length === 0) {
+    return '<p class="muted">No hay modelos disponibles en el pool en este momento.</p>';
+  }
+
+  // Build provider list for filter
+  const providers = [...new Set(allModelObjects.map((m) => m.provider).filter(Boolean))].sort();
+  const filter = state.qsProviderFilter;
+  const filteredObjects = filter ? allModelObjects.filter((m) => m.provider === filter) : allModelObjects;
+  const filteredIds = filteredObjects.map((m) => m.id);
+
+  const filterBar = providers.length > 1 ? `
+    <div class="qs-filter-bar">
+      <span class="qs-filter-label">Proveedor:</span>
+      <button
+        class="qs-filter-btn ${!filter ? 'active' : ''}"
+        type="button"
+        data-action="qs-provider-filter"
+        data-provider=""
+      >Todos</button>
+      ${providers.map((p) => `
+        <button
+          class="qs-filter-btn ${filter === p ? 'active' : ''}"
+          type="button"
+          data-action="qs-provider-filter"
+          data-provider="${escapeHtml(p)}"
+        >${escapeHtml(p)}</button>
+      `).join('')}
+    </div>
+  ` : '';
+
+  if (!multi) {
+    // Single model radio picker
+    const active = selectedModels[0] || filteredIds[0] || '';
+    return `
+      <div class="qs-model-picker" style="margin-bottom: 1rem;">
+        <div class="qs-picker-toolbar">
+          <div class="qs-model-picker-label">Selecciona el modelo:</div>
+        </div>
+        ${filterBar}
+        <div class="qs-model-list">
+          ${filteredObjects.map(({ id: modelId }) => `
+            <label class="qs-model-item ${active === modelId ? 'active' : ''}">
+              <input
+                type="radio"
+                name="qs-model-single"
+                value="${escapeHtml(modelId)}"
+                ${active === modelId ? 'checked' : ''}
+                data-action="qs-pick-single-model"
+                data-model="${escapeHtml(modelId)}"
+              />
+              <span class="qs-model-id">${escapeHtml(modelId)}</span>
+            </label>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  // Multi model checkbox picker
+  // "all selected" = empty array; otherwise = explicit list
+  const allSelected = selectedModels.length === 0;
+  const selectedCount = allSelected ? allModelObjects.length : selectedModels.length;
+
+  return `
+    <div class="qs-model-picker" style="margin-bottom: 1rem;">
+      <div class="qs-picker-toolbar">
+        <div class="qs-model-picker-label">
+          Modelos a incluir:
+          <span class="muted" style="font-size: 0.75rem; margin-left: 0.4rem;">
+            ${selectedCount}/${allModelObjects.length} seleccionados
+          </span>
+        </div>
+        <div class="qs-picker-actions">
+          <button
+            class="ghost-button"
+            type="button"
+            data-action="qs-select-all"
+            style="padding: 0.2rem 0.6rem; font-size: 0.75rem;"
+          >Todo</button>
+          <button
+            class="ghost-button"
+            type="button"
+            data-action="qs-deselect-all"
+            style="padding: 0.2rem 0.6rem; font-size: 0.75rem; color: var(--muted);"
+            ${selectedModels.length === 0 ? 'disabled' : ''}
+          >Ninguno</button>
+        </div>
+      </div>
+      ${filterBar}
+      <div class="qs-model-list" id="qs-model-list-scroll">
+        ${filteredObjects.map(({ id: modelId }) => {
+          const checked = allSelected || selectedModels.includes(modelId);
+          return `
+            <label class="qs-model-item ${checked ? 'active' : ''}">
+              <input
+                type="checkbox"
+                value="${escapeHtml(modelId)}"
+                ${checked ? 'checked' : ''}
+                data-action="qs-toggle-model"
+                data-model="${escapeHtml(modelId)}"
+              />
+              <span class="qs-model-id">${escapeHtml(modelId)}</span>
+            </label>
+          `;
+        }).join('')}
+      </div>
+    </div>
+  `;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 function renderContent() {
   if (!state.dashboard) {
     return '<div class="panel">Cargando dashboard...</div>';
   }
 
+  if (state.view === 'quickstart') return renderQuickstart();
   if (state.view === 'chat') return renderChat();
   if (state.view === 'playground') return renderPlayground();
   if (state.view === 'metrics') return renderMetrics();
   if (state.view === 'settings') return renderSettingsMultiPage();
   return renderOverview();
+}
+
+function getViewTitle(view) {
+  const titles = {
+    overview: 'Resumen operativo',
+    quickstart: 'Inicio rapido — Configura tu agente de IA',
+    chat: 'Chat embebido',
+    playground: 'Playground de endpoints',
+    metrics: 'Metricas del router',
+    settings: 'Ajustes y seguridad',
+  };
+  return titles[view] || 'Panel';
 }
 
 function renderAppShell() {
@@ -3859,6 +4470,7 @@ function renderAppShell() {
         <nav class="nav">
           ${[
             ['overview', 'Resumen'],
+            ['quickstart', 'Inicio rapido'],
             ['chat', 'Chat'],
             ['playground', 'Playground'],
             ['metrics', 'Metricas'],
@@ -3884,7 +4496,7 @@ function renderAppShell() {
       <main class="main">
         <section class="topbar">
           <div class="headline">
-            <h2>${escapeHtml(state.view === 'overview' ? 'Resumen operativo' : state.view === 'chat' ? 'Chat embebido' : state.view === 'playground' ? 'Playground de endpoints' : state.view === 'metrics' ? 'Metricas del router' : 'Ajustes y seguridad')}</h2>
+            <h2>${escapeHtml(getViewTitle(state.view))}</h2>
             <p>Sesion expira: ${escapeHtml(formatDate(state.dashboard.auth.sessionExpiresAt))}</p>
           </div>
           <div class="button-row">
@@ -4531,15 +5143,17 @@ async function handleSubmit(event) {
 }
 
 async function handleClick(event) {
-  const target = event.target;
-  if (!(target instanceof HTMLElement)) {
+  const element = event.target;
+  if (!(element instanceof HTMLElement)) {
+    return;
+  }
+
+  const target = element.closest('[data-action]');
+  if (!target) {
     return;
   }
 
   const action = target.dataset.action;
-  if (!action) {
-    return;
-  }
 
   try {
     if (action === 'dismiss-flash') {
@@ -4827,6 +5441,109 @@ async function handleClick(event) {
       return;
     }
 
+    if (action === 'regenerate-api-key') {
+      const id = target.dataset.id;
+      const name = target.dataset.name || 'esta API key';
+      if (!confirm(`¿Regenerar "${name}"? La key actual dejará de funcionar de inmediato.`)) return;
+      try {
+        const result = await apiRequest(`/api/api-keys/${id}/regenerate`, { method: 'POST' });
+        state.lastCreatedApiKey = result.rawApiKey ?? null;
+        await refreshDashboard();
+        // Navigate to api-keys tab so the banner is visible
+        state.view = 'settings';
+        state.settingsPage = 'api-keys';
+        render();
+        setFlash('Key regenerada. Cópiala ahora — no se volverá a mostrar.');
+      } catch (err) {
+        setFlash(err?.message ?? 'No se pudo regenerar la key.', 'error');
+      }
+      return;
+    }
+
+    if (action === 'dismiss-revealed-key') {
+      state.lastCreatedApiKey = null;
+      render();
+      return;
+    }
+
+    if (action === 'copy-revealed-key') {
+      const key = state.lastCreatedApiKey || '';
+      if (!key) return;
+      try {
+        await navigator.clipboard.writeText(key);
+        state.qsCopied = 'revealedkey';
+        render();
+        setTimeout(() => {
+          if (state.qsCopied === 'revealedkey') {
+            state.qsCopied = null;
+            render();
+          }
+        }, 2000);
+      } catch {
+        setFlash('No se pudo copiar al portapapeles.', 'error');
+      }
+      return;
+    }
+
+    if (action === 'qs-pick-agent') {
+      state.qsAgent = target.dataset.agent || 'opencode';
+      state.qsSelectedModels = [];
+      state.qsCopied = null;
+      render();
+      return;
+    }
+
+    if (action === 'qs-copy') {
+      const text = target.dataset.qsText || '';
+      const copyId = target.dataset.qsId || text;
+      try {
+        await navigator.clipboard.writeText(text);
+        state.qsCopied = copyId;
+        render();
+        // Reset after 2 seconds
+        setTimeout(() => {
+          if (state.qsCopied === copyId) {
+            state.qsCopied = null;
+            render();
+          }
+        }, 2000);
+      } catch (err) {
+        setFlash('No se pudo copiar al portapapeles.', 'error');
+      }
+      return;
+    }
+
+    if (action === 'qs-select-all') {
+      state.qsSelectedModels = [];  // empty = all selected
+      state.qsCopied = null;
+      render();
+      return;
+    }
+
+    if (action === 'qs-deselect-all') {
+      // Keep at least one selected to avoid broken config output
+      const allIds = getQuickStartModels().map((m) => m.id);
+      state.qsSelectedModels = allIds.length > 0 ? [allIds[0]] : [];
+      state.qsCopied = null;
+      render();
+      return;
+    }
+
+    if (action === 'qs-provider-filter') {
+      state.qsProviderFilter = target.dataset.provider || '';
+      // Do NOT reset selection — preserve cross-provider picks
+      render();
+      return;
+    }
+
+    // Legacy alias for backwards compat
+    if (action === 'qs-clear-models') {
+      state.qsSelectedModels = [];
+      state.qsCopied = null;
+      render();
+      return;
+    }
+
     if (action === 'delete-model-alias') {
       const alias = target.dataset.alias;
       const category = target.dataset.category || 'chat';
@@ -4969,6 +5686,62 @@ function handleInput(event) {
     if (field === 'supportsVideoGeneration' && target instanceof HTMLInputElement) {
       models[index].supportsVideoGeneration = target.checked;
     }
+    return;
+  }
+
+  if (action === 'qs-toggle-model' && target instanceof HTMLInputElement) {
+    const modelId = target.dataset.model || '';
+    if (!modelId) return;
+    const allModelObjects = getQuickStartModels();
+    const allIds = allModelObjects.map((m) => m.id);
+    // Preserve scroll before re-render
+    const listEl = document.getElementById('qs-model-list-scroll');
+    const savedListScroll = listEl ? listEl.scrollTop : 0;
+    const contentEl = document.querySelector('.content');
+    const savedContentScroll = contentEl ? contentEl.scrollTop : 0;
+    // Update selection
+    if (state.qsSelectedModels.length === 0) {
+      // "all" => deselect means keep the rest explicit
+      state.qsSelectedModels = allIds.filter((m) => m !== modelId);
+    } else if (target.checked) {
+      if (!state.qsSelectedModels.includes(modelId)) {
+        state.qsSelectedModels = [...state.qsSelectedModels, modelId];
+      }
+      // If all are now selected, go back to "all" (empty)
+      if (state.qsSelectedModels.length === allIds.length) {
+        state.qsSelectedModels = [];
+      }
+    } else {
+      state.qsSelectedModels = state.qsSelectedModels.filter((m) => m !== modelId);
+    }
+    state.qsCopied = null;
+    render();
+    // Restore scroll after render
+    requestAnimationFrame(() => {
+      const newList = document.getElementById('qs-model-list-scroll');
+      if (newList) newList.scrollTop = savedListScroll;
+      const newContent = document.querySelector('.content');
+      if (newContent) newContent.scrollTop = savedContentScroll;
+    });
+    return;
+  }
+
+  if (action === 'qs-pick-single-model' && target instanceof HTMLInputElement) {
+    const modelId = target.dataset.model || '';
+    if (!modelId) return;
+    const listEl = document.getElementById('qs-model-list-scroll');
+    const savedListScroll = listEl ? listEl.scrollTop : 0;
+    const contentEl = document.querySelector('.content');
+    const savedContentScroll = contentEl ? contentEl.scrollTop : 0;
+    state.qsSelectedModels = [modelId];
+    state.qsCopied = null;
+    render();
+    requestAnimationFrame(() => {
+      const newList = document.getElementById('qs-model-list-scroll');
+      if (newList) newList.scrollTop = savedListScroll;
+      const newContent = document.querySelector('.content');
+      if (newContent) newContent.scrollTop = savedContentScroll;
+    });
     return;
   }
 }

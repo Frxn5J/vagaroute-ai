@@ -7,10 +7,12 @@ import {
   listApiKeysForUser,
   listAllProjects,
   listProjectsForUser,
+  rotateUserApiKey,
   setApiKeyActive,
   updateApiKeyRateLimit,
 } from '../../core/db';
 import { createAdditionalApiKey } from '../../middlewares/auth';
+import { generateApiKey, hashToken } from '../../utils/crypto';
 import { errorResponse, jsonResponse, readJsonBody, type RouteContext } from '../_shared';
 
 export async function handleApiKeys(
@@ -85,6 +87,25 @@ export async function handleApiKeys(
       const message = (err as { message?: string })?.message ?? 'No se pudo actualizar la API key';
       return errorResponse(req, 400, message, 'api_key_error');
     }
+  }
+
+  // ── POST /api/api-keys/:id/regenerate ────────────────────────────────────
+
+  const regenerateMatch = pathname.match(/^\/api\/api-keys\/([^/]+)\/regenerate$/);
+  if (req.method === 'POST' && regenerateMatch) {
+    const apiKey = getApiKeyById(regenerateMatch[1] ?? '');
+    if (!apiKey) return errorResponse(req, 404, 'API key no encontrada', 'not_found');
+    if (apiKey.userId !== auth.user.id && !isAdmin(auth)) {
+      return errorResponse(req, 403, 'No puedes regenerar esta API key', 'forbidden');
+    }
+
+    const newRawKey = generateApiKey('router');
+    const updatedKey = rotateUserApiKey(apiKey.id, hashToken(newRawKey), newRawKey.slice(0, 16));
+    if (!updatedKey) {
+      return errorResponse(req, 500, 'No se pudo regenerar la API key', 'server_error');
+    }
+
+    return jsonResponse(req, { ok: true, apiKey: updatedKey, rawApiKey: newRawKey }, 200);
   }
 
   return null;
