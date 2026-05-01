@@ -71,6 +71,7 @@ export async function loadGroqServices(): Promise<AIService[]> {
           id: model.id,
           supportsTools: !model.id.includes('gpt-oss') && !model.id.includes('deepseek-r1'),
           supportsVision: model.id.includes('vision') || model.id.includes('llava'),
+          emulateTools: model.id.includes('deepseek-r1'),
         }));
     });
 

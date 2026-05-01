@@ -323,6 +323,7 @@ describe('auth', () => {
 describe('api keys', () => {
   test('creates additional API keys and authenticates model listing with Bearer auth', async () => {
     const bootstrap = await bootstrapAdmin();
+    replacePoolStates([buildMockState(createSuccessService())]);
 
     const createKeyResponse = await request('/api/api-keys', {
       method: 'POST',
@@ -350,7 +351,7 @@ describe('api keys', () => {
 
     const modelsPayload = await modelsResponse.json() as {
       object: string;
-      data: Array<{ id: string }>;
+      data: Array<{ id: string, supports_tool_emulation?: boolean }>;
     };
 
     expect(modelsPayload.object).toBe('list');
@@ -910,6 +911,12 @@ describe('password reset', () => {
   test('requests and confirms a password reset with a temporary token', async () => {
     const bootstrap = await bootstrapAdmin();
 
+    let printedUrl = '';
+    const originalConsoleLog = console['log'];
+    console['log'] = (msg: string) => {
+      if (msg && msg.includes('[PASSWORD RESET]')) printedUrl = msg;
+    };
+
     const requestResetResponse = await request('/api/auth/password-reset/request', {
       method: 'POST',
       origin: 'https://allowed.example',
@@ -917,14 +924,11 @@ describe('password reset', () => {
         email: 'admin@example.com',
       },
     });
+    
+    console['log'] = originalConsoleLog;
     expect(requestResetResponse.status).toBe(200);
 
-    const requestResetPayload = await requestResetResponse.json() as {
-      resetUrl: string | null;
-    };
-    expect(requestResetPayload.resetUrl).toBeTruthy();
-
-    const resetToken = new URL(requestResetPayload.resetUrl || 'http://localhost').searchParams.get('reset');
+    const resetToken = printedUrl.match(/reset=([a-zA-Z0-9_-]+)/)?.[1];
     expect(resetToken).toBeTruthy();
 
     const confirmResponse = await request('/api/auth/password-reset/confirm', {

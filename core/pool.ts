@@ -15,6 +15,7 @@ import { logger } from '../utils/logger';
 import {
   getAllModelStats,
   getAppSettings,
+  getModelCapabilityOverridesMap,
   getModelTierOverridesMap,
   getModelUsageSnapshots,
   getProviderCooldownMap,
@@ -34,6 +35,7 @@ import {
   normalizeServiceId,
   type UsageEstimate,
 } from './usageLimits';
+import { transformRequestForEmulation, wrapStreamWithToolParsing } from './toolEmulation';
 
 const MIN_MS = 60 * 1_000;
 const HOUR_MS = 60 * MIN_MS;
@@ -98,12 +100,26 @@ function buildStates(freeServices: AIService[], paidServices: AIService[]): Serv
   const dbStats = getAllModelStats();
   const dbStatusMap = new Map(dbStats.map((row) => [row.id, row]));
   const tierOverrides = getModelTierOverridesMap();
+  const capOverrides = getModelCapabilityOverridesMap();
+
+  function applyCapabilities(service: AIService): AIService {
+    const override = capOverrides.get(service.name);
+    if (!override) return service;
+    return {
+      ...service,
+      supportsTools: override.supportsTools ?? service.supportsTools,
+      supportsVision: override.supportsVision ?? service.supportsVision,
+      emulateTools: override.emulateTools ?? service.emulateTools,
+      supportsImageGeneration: override.supportsImageGeneration ?? service.supportsImageGeneration,
+      supportsVideoGeneration: override.supportsVideoGeneration ?? service.supportsVideoGeneration,
+    };
+  }
 
   return [
     ...freeServices.map((service) => {
       const dbRow = dbStatusMap.get(service.name);
       return {
-        service,
+        service: applyCapabilities(service),
         cooldownUntil: dbRow?.rate_limited_until ?? 0,
         disabled: dbRow?.status === 'disabled',
         paidOnly: false,
@@ -113,7 +129,7 @@ function buildStates(freeServices: AIService[], paidServices: AIService[]): Serv
     ...paidServices.map((service) => {
       const dbRow = dbStatusMap.get(service.name);
       return {
-        service,
+        service: applyCapabilities(service),
         cooldownUntil: dbRow?.rate_limited_until ?? 0,
         disabled: dbRow?.status === 'disabled',
         paidOnly: true,
@@ -220,9 +236,9 @@ function getCandidatePool(
 
   if (requireTools) {
     if (AGENT_MODEL_NAMES.length > 0) {
-      pool = pool.filter((state) => AGENT_MODEL_NAMES.includes(state.service.name) && state.service.supportsTools);
+      pool = pool.filter((state) => AGENT_MODEL_NAMES.includes(state.service.name) && (state.service.supportsTools || state.service.emulateTools));
     } else {
-      pool = pool.filter((state) => state.service.supportsTools);
+      pool = pool.filter((state) => state.service.supportsTools || state.service.emulateTools);
     }
   }
 
@@ -471,9 +487,21 @@ export async function tryServices(
     }, 'Trying pooled service');
 
     try {
-      const stream = await state.service.chat(request, id);
+      const hasTools = Boolean(request.tools?.length);
+      const needsEmulation = hasTools && !state.service.supportsTools && Boolean(state.service.emulateTools);
+      
+      const effectiveRequest = needsEmulation 
+        ? transformRequestForEmulation(request)
+        : request;
+
+      const stream = await state.service.chat(effectiveRequest, id);
       incrementModelUsage(state.service.name);
-      return { stream, serviceName: state.service.name };
+      
+      const effectiveStream = needsEmulation
+        ? wrapStreamWithToolParsing(stream, request.tools!, id, state.service.name)
+        : stream;
+        
+      return { stream: effectiveStream, serviceName: state.service.name };
     } catch (err) {
       const message = (err as { message?: string })?.message ?? String(err);
       logger.error({ attempt, serviceName: state.service.name, message }, 'Service request failed');
@@ -520,9 +548,21 @@ export async function trySpecificService(
   }
 
   try {
-    const stream = await state.service.chat(request, id);
+    const hasTools = Boolean(request.tools?.length);
+    const needsEmulation = hasTools && !state.service.supportsTools && Boolean(state.service.emulateTools);
+    
+    const effectiveRequest = needsEmulation 
+      ? transformRequestForEmulation(request)
+      : request;
+
+    const stream = await state.service.chat(effectiveRequest, id);
     incrementModelUsage(state.service.name);
-    return { stream, serviceName: state.service.name };
+    
+    const effectiveStream = needsEmulation
+      ? wrapStreamWithToolParsing(stream, request.tools!, id, state.service.name)
+      : stream;
+
+    return { stream: effectiveStream, serviceName: state.service.name };
   } catch (err) {
     handleServiceError(state, err);
     throw err;

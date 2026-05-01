@@ -7,6 +7,7 @@ function createCohereService({ id: modelId }: { id: string }): AIService {
   return {
     name: `Cohere/${modelId}`,
     supportsTools: false,
+    emulateTools: true,
     async chat(request: ChatRequest, id: string) {
       return withProviderKey('cohere', async ({ key }) => {
         const client = new CohereClient({ token: key });

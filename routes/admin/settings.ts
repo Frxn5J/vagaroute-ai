@@ -15,6 +15,7 @@ import {
   listInvitationTokens,
   listModelAliases,
   listModelTierOverrides,
+  listModelCapabilityOverrides,
   listProjectsForUser,
   listRateLimitRules,
   listUsers,
@@ -149,6 +150,7 @@ function buildDashboardPayload(auth: AuthContext) {
         provider: state.service.name.split('/')[0] ?? 'Unknown',
         supportsTools: state.service.supportsTools,
         supportsVision: Boolean(state.service.supportsVision),
+        emulateTools: Boolean(state.service.emulateTools),
         paidOnly: state.paidOnly,
         tier: state.tier,
         status: state.disabled
@@ -182,6 +184,7 @@ function buildDashboardPayload(auth: AuthContext) {
     alerts: buildDashboardAlerts(auth, { tokens, userUsage, projectUsage, providerStats }),
     customProviders: isAdmin(auth) ? listCustomProviders() : [],
     modelTierOverrides: isAdmin(auth) ? listModelTierOverrides() : [],
+    modelCapabilityOverrides: isAdmin(auth) ? listModelCapabilityOverrides() : [],
     modelAliases: isAdmin(auth) ? listModelAliases() : [],
     modelAliasCategories: isAdmin(auth) ? getModelAliasCategories() : [],
     cache: getResponseCacheStats(isAdmin(auth) ? undefined : { userId: auth.user.id }),

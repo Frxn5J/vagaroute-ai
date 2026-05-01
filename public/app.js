@@ -168,6 +168,12 @@ function getSettingsPages() {
       description: 'Controla el orden en que el router elige modelos. Tier 1 tiene maxima prioridad, tier 3 es fallback.',
     },
     {
+      id: 'model-capabilities',
+      label: 'Capacidades modelo',
+      title: 'Capacidades de modelo',
+      description: 'Sobrescribe las capacidades de los modelos (tools, vision, emulacion) para forzar su activacion o desactivacion.',
+    },
+    {
       id: 'model-aliases',
       label: 'Compatibilidad',
       title: 'Compatibilidad de modelos',
@@ -366,6 +372,25 @@ function getSettingsGuideContent(pageId = state.settingsPage) {
         {
           title: 'Alias vs virtuales',
           text: 'Los modelos virtuales (auto, img, tools) siguen funcionando igual. Los alias solo aplican cuando se especifica un nombre de modelo explicito.',
+        },
+      ],
+    },
+    'model-capabilities': {
+      eyebrow: 'Tutorial rapido',
+      title: 'Como funcionan las capacidades',
+      intro: 'A veces el router no detecta correctamente si un modelo soporta herramientas (tools) o vision. Desde aqui puedes forzar esa configuracion.',
+      items: [
+        {
+          title: 'Soporte nativo',
+          text: 'Si un modelo dice no soportar tools pero sabes que si lo hace, fuerza su activacion aqui.',
+        },
+        {
+          title: 'Emulacion',
+          text: 'Activa la emulacion de herramientas para modelos que no tienen soporte nativo pero que son buenos siguiendo instrucciones en formato JSON.',
+        },
+        {
+          title: 'Auto',
+          text: 'Usa Auto para dejar que el router determine la capacidad segun la informacion del proveedor.',
         },
       ],
     },
@@ -3184,6 +3209,78 @@ function renderSettingsModelTiers() {
   `;
 }
 
+function renderSettingsModelCapabilities() {
+  const models = state.dashboard.pool?.models || [];
+  const overrides = state.dashboard.modelCapabilityOverrides || [];
+  const overrideMap = new Map(overrides.map((o) => [o.modelId, o]));
+
+  const rows = models.map((model) => {
+    const override = overrideMap.get(model.id);
+    const isOverridden = !!override;
+
+    return `
+      <tr>
+        <td>
+          <div style="font-family: var(--font-mono); font-size: 0.78rem;">${escapeHtml(model.id)}</div>
+          ${isOverridden ? '<span class="tag" style="font-size: 0.7rem; margin-top: 0.2rem;">Override</span>' : ''}
+        </td>
+        <td><span class="tag">${escapeHtml(formatProviderLabel(model.provider))}</span></td>
+        <td>
+          <form class="button-row" style="gap: 0.3rem;" data-form="update-model-capability">
+            <input type="hidden" name="modelId" value="${escapeHtml(model.id)}" />
+            <select name="supportsTools" style="width: auto; padding: 0.2rem; font-size: 0.78rem;">
+              <option value="" ${!isOverridden || override.supportsTools === null ? 'selected' : ''}>Tools: Auto (${model.supportsTools ? 'Si' : 'No'})</option>
+              <option value="true" ${isOverridden && override.supportsTools === true ? 'selected' : ''}>Tools: Forzar Si</option>
+              <option value="false" ${isOverridden && override.supportsTools === false ? 'selected' : ''}>Tools: Forzar No</option>
+            </select>
+            <select name="supportsVision" style="width: auto; padding: 0.2rem; font-size: 0.78rem;">
+              <option value="" ${!isOverridden || override.supportsVision === null ? 'selected' : ''}>Vision: Auto (${model.supportsVision ? 'Si' : 'No'})</option>
+              <option value="true" ${isOverridden && override.supportsVision === true ? 'selected' : ''}>Vision: Forzar Si</option>
+              <option value="false" ${isOverridden && override.supportsVision === false ? 'selected' : ''}>Vision: Forzar No</option>
+            </select>
+            <select name="emulateTools" style="width: auto; padding: 0.2rem; font-size: 0.78rem;">
+              <option value="" ${!isOverridden || override.emulateTools === null ? 'selected' : ''}>Emular: Auto (${model.emulateTools ? 'Si' : 'No'})</option>
+              <option value="true" ${isOverridden && override.emulateTools === true ? 'selected' : ''}>Emular: Forzar Si</option>
+              <option value="false" ${isOverridden && override.emulateTools === false ? 'selected' : ''}>Emular: Forzar No</option>
+            </select>
+            <button class="primary-button" type="submit" style="padding: 0.2rem 0.6rem; font-size: 0.78rem;">Guardar</button>
+            ${isOverridden ? `
+              <button class="danger-button" type="button" data-action="reset-model-capability" data-model="${escapeHtml(model.id)}" style="padding: 0.2rem 0.6rem; font-size: 0.78rem;">Borrar</button>
+            ` : ''}
+          </form>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  return `
+    <article class="panel">
+      <h3>Capacidades de los modelos</h3>
+      <p class="muted">
+        Ajusta el soporte de tools, vision y emulacion manualmente si la deteccion automatica falla.
+      </p>
+      ${models.length === 0 ? `
+        <div class="empty-state">No hay modelos en el pool en este momento.</div>
+      ` : `
+        <div class="table-wrap" style="margin-top: 1rem; overflow-x: auto;">
+          <table>
+            <thead>
+              <tr>
+                <th>Modelo</th>
+                <th>Proveedor</th>
+                <th>Capacidades</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows}
+            </tbody>
+          </table>
+        </div>
+      `}
+    </article>
+  `;
+}
+
 function renderSettingsModelAliases() {
   const aliases = state.dashboard.modelAliases || [];
   const fallbackAliasCategories = [
@@ -3794,6 +3891,10 @@ function renderSettingsMultiPage() {
 
   if (isAdminUser && state.settingsPage === 'model-tiers') {
     pageContent = renderSettingsModelTiers();
+  }
+
+  if (isAdminUser && state.settingsPage === 'model-capabilities') {
+    pageContent = renderSettingsModelCapabilities();
   }
 
   if (isAdminUser && state.settingsPage === 'model-aliases') {
@@ -4435,6 +4536,40 @@ async function submitUpdateModelLimit(form) {
   if (!modelId) {
     throw new Error('Selecciona un modelo.');
   }
+  if (formId === 'update-model-limit') {
+    const modelId = Array.isArray(values.modelId) ? values.modelId[0] : values.modelId;
+    await apiRequest('/api/rate-limits/model', {
+      method: 'PUT',
+      body: { ...values, modelId },
+    });
+    await refreshDashboard();
+    setFlash('Limite de modelo actualizado correctamente.');
+    return;
+  }
+
+  if (formId === 'update-model-capability') {
+    const modelId = Array.isArray(values.modelId) ? values.modelId[0] : values.modelId;
+    
+    const parseOpt = (val) => {
+      if (Array.isArray(val)) val = val[0];
+      if (val === 'true') return true;
+      if (val === 'false') return false;
+      return null;
+    };
+
+    await apiRequest('/api/model-capabilities', {
+      method: 'PUT',
+      body: {
+        modelId,
+        supportsTools: parseOpt(values.supportsTools),
+        supportsVision: parseOpt(values.supportsVision),
+        emulateTools: parseOpt(values.emulateTools),
+      },
+    });
+    await refreshDashboard();
+    setFlash(`Capacidades de ${modelId} actualizadas.`);
+    return;
+  }
   await apiRequest('/api/rate-limits/model', {
     method: 'PUT',
     body: {
@@ -4824,6 +4959,14 @@ async function handleClick(event) {
       await apiRequest(`/api/model-tiers/${encodeURIComponent(modelId)}`, { method: 'DELETE' });
       await refreshDashboard();
       setFlash(`Tier de ${modelId} restaurado a automatico.`);
+      return;
+    }
+
+    if (action === 'reset-model-capability') {
+      const modelId = target.dataset.model;
+      await apiRequest(`/api/model-capabilities/${encodeURIComponent(modelId)}`, { method: 'DELETE' });
+      await refreshDashboard();
+      setFlash(`Capacidades de ${modelId} restauradas a automaticas.`);
       return;
     }
 

@@ -80,6 +80,7 @@ export interface CustomModelConfig {
   supportsVision: boolean;
   supportsImageGeneration: boolean;
   supportsVideoGeneration: boolean;
+  emulateTools: boolean;
 }
 
 export type CustomMediaCategory = 'images' | 'videos';
@@ -223,6 +224,7 @@ function normalizeCustomModelConfig(input: unknown): CustomModelConfig | null {
     supportsVision: record.supportsVision === true,
     supportsImageGeneration: record.supportsImageGeneration === true,
     supportsVideoGeneration: record.supportsVideoGeneration === true,
+    emulateTools: record.emulateTools === true,
   };
 }
 
@@ -354,6 +356,7 @@ export async function discoverCustomProviderModels(input: {
       supportsVision: false,
       supportsImageGeneration: false,
       supportsVideoGeneration: false,
+      emulateTools: false,
     }));
 
   if (models.length === 0) {

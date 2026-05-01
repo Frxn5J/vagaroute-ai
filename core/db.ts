@@ -242,6 +242,16 @@ db.exec(`
     tier INTEGER NOT NULL CHECK(tier IN (1, 2, 3)),
     updated_at INTEGER NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS model_capability_overrides (
+    model_id TEXT PRIMARY KEY,
+    supports_tools INTEGER,
+    supports_vision INTEGER,
+    emulate_tools INTEGER,
+    supports_image_generation INTEGER,
+    supports_video_generation INTEGER,
+    updated_at INTEGER NOT NULL
+  );
 `);
 
 const getRequestRateLimitBucket = db.prepare(`
@@ -3064,6 +3074,104 @@ export function upsertModelTierOverride(modelId: string, tier: 1 | 2 | 3): void 
 export function deleteModelTierOverride(modelId: string): boolean {
   const result = db.query(
     'DELETE FROM model_tier_overrides WHERE model_id = ?',
+  ).run(modelId);
+  return result.changes > 0;
+}
+
+export interface ModelCapabilityOverride {
+  modelId: string;
+  supportsTools: boolean | null;
+  supportsVision: boolean | null;
+  emulateTools: boolean | null;
+  supportsImageGeneration: boolean | null;
+  supportsVideoGeneration: boolean | null;
+  updatedAt: number;
+}
+
+function parseBoolInt(val: unknown): boolean | null {
+  if (val === 1) return true;
+  if (val === 0) return false;
+  return null;
+}
+
+function toBoolInt(val: boolean | null | undefined): 1 | 0 | null {
+  if (val === true) return 1;
+  if (val === false) return 0;
+  return null;
+}
+
+export function listModelCapabilityOverrides(): ModelCapabilityOverride[] {
+  return (db.query(
+    'SELECT model_id, supports_tools, supports_vision, emulate_tools, supports_image_generation, supports_video_generation, updated_at FROM model_capability_overrides ORDER BY model_id ASC',
+  ).all() as Array<{ 
+    model_id: string; 
+    supports_tools: number | null; 
+    supports_vision: number | null; 
+    emulate_tools: number | null; 
+    supports_image_generation: number | null; 
+    supports_video_generation: number | null; 
+    updated_at: number;
+  }>).map((row) => ({
+    modelId: row.model_id,
+    supportsTools: parseBoolInt(row.supports_tools),
+    supportsVision: parseBoolInt(row.supports_vision),
+    emulateTools: parseBoolInt(row.emulate_tools),
+    supportsImageGeneration: parseBoolInt(row.supports_image_generation),
+    supportsVideoGeneration: parseBoolInt(row.supports_video_generation),
+    updatedAt: row.updated_at,
+  }));
+}
+
+export function getModelCapabilityOverridesMap(): Map<string, Omit<ModelCapabilityOverride, 'modelId' | 'updatedAt'>> {
+  const rows = db.query(
+    'SELECT model_id, supports_tools, supports_vision, emulate_tools, supports_image_generation, supports_video_generation FROM model_capability_overrides',
+  ).all() as Array<{ 
+    model_id: string; 
+    supports_tools: number | null; 
+    supports_vision: number | null; 
+    emulate_tools: number | null; 
+    supports_image_generation: number | null; 
+    supports_video_generation: number | null; 
+  }>;
+  return new Map(rows.map((row) => [
+    row.model_id, 
+    {
+      supportsTools: parseBoolInt(row.supports_tools),
+      supportsVision: parseBoolInt(row.supports_vision),
+      emulateTools: parseBoolInt(row.emulate_tools),
+      supportsImageGeneration: parseBoolInt(row.supports_image_generation),
+      supportsVideoGeneration: parseBoolInt(row.supports_video_generation),
+    }
+  ]));
+}
+
+export function upsertModelCapabilityOverride(modelId: string, override: Omit<ModelCapabilityOverride, 'modelId' | 'updatedAt'>): void {
+  db.query(`
+    INSERT INTO model_capability_overrides (
+      model_id, supports_tools, supports_vision, emulate_tools, supports_image_generation, supports_video_generation, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(model_id) DO UPDATE SET
+      supports_tools = excluded.supports_tools,
+      supports_vision = excluded.supports_vision,
+      emulate_tools = excluded.emulate_tools,
+      supports_image_generation = excluded.supports_image_generation,
+      supports_video_generation = excluded.supports_video_generation,
+      updated_at = excluded.updated_at
+  `).run(
+    modelId, 
+    toBoolInt(override.supportsTools),
+    toBoolInt(override.supportsVision),
+    toBoolInt(override.emulateTools),
+    toBoolInt(override.supportsImageGeneration),
+    toBoolInt(override.supportsVideoGeneration),
+    Date.now()
+  );
+}
+
+export function deleteModelCapabilityOverride(modelId: string): boolean {
+  const result = db.query(
+    'DELETE FROM model_capability_overrides WHERE model_id = ?',
   ).run(modelId);
   return result.changes > 0;
 }

@@ -621,14 +621,16 @@ function createCustomService(input: {
   apiKey: string;
   supportsTools: boolean;
   supportsVision: boolean;
+  emulateTools: boolean;
 }): AIService {
-  const { providerSlug, protocol, modelId, baseUrl, apiKey, supportsTools, supportsVision } = input;
+  const { providerSlug, protocol, modelId, baseUrl, apiKey, supportsTools, supportsVision, emulateTools } = input;
   const serviceName = `${providerSlug}/${modelId}`;
 
   return {
     name: serviceName,
     supportsTools,
     supportsVision,
+    emulateTools,
     async chat(request: ChatRequest, id: string) {
       if (protocol === 'gemini') {
         return createGeminiStream({
@@ -718,6 +720,7 @@ export async function loadCustomServices(): Promise<AIService[]> {
           apiKey,
           supportsTools: model.supportsTools,
           supportsVision: model.supportsVision,
+          emulateTools: model.emulateTools,
         }),
       );
     }

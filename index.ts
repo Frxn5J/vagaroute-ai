@@ -20,6 +20,7 @@ import { handleApiKeys } from './routes/admin/apiKeys';
 import { handleCustomProviders } from './routes/admin/customProviders';
 import { handleAdminMetrics } from './routes/admin/metrics';
 import { handleModelTiers } from './routes/admin/modelTiers';
+import { handleModelCapabilities } from './routes/admin/modelCapabilities';
 import { handleProjects } from './routes/admin/projects';
 import { handleRateLimits } from './routes/admin/rateLimits';
 import { handleServiceKeys } from './routes/admin/serviceKeys';
@@ -113,6 +114,7 @@ const AUTHED_HANDLERS = [
   handleServiceKeys,
   handleRateLimits,
   handleModelTiers,
+  handleModelCapabilities,
   handleCustomProviders,
   handleAdminMetrics,
   handleModels,

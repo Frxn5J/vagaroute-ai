@@ -126,6 +126,7 @@ export async function loadGeminiServices(): Promise<AIService[]> {
           id,
           supportsTools: false,
           supportsVision: !id.includes('gemma'),
+          emulateTools: !id.includes('gemma'),
         }));
     });
 

@@ -1,5 +1,6 @@
 import type { ChatRequest } from '../types';
 import { estimateMessageTokens, estimateTextTokens } from './tokenizer';
+import { estimateEmulationTokenOverhead } from './toolEmulation';
 
 export type RateLimitMode = 'none' | 'tokens' | 'groq';
 
@@ -76,12 +77,20 @@ export function estimateChatUsage(request: ChatRequest): UsageEstimate {
   const promptTokens = (request.messages ?? []).reduce((total, message) => total + estimateMessageTokens(message), 0)
     + estimateTextTokens(JSON.stringify(request.tools ?? []));
   const completionTokens = Math.max(0, Math.floor(request.max_tokens ?? 4096));
-  return buildUsageEstimate({
+  const estimate = buildUsageEstimate({
     requests: 1,
     promptTokens,
     completionTokens,
     totalTokens: promptTokens + completionTokens,
   });
+
+  if (request.tools?.length) {
+    const overhead = estimateEmulationTokenOverhead(request.tools);
+    estimate.promptTokens += overhead;
+    estimate.totalTokens += overhead;
+  }
+
+  return estimate;
 }
 
 export function estimateEmbeddingsUsage(input: string | string[]): UsageEstimate {
