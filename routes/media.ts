@@ -5,6 +5,7 @@ import {
   extractAudioSecondsFromPayload,
   normalizeProviderId,
 } from '../core/usageLimits';
+import { logger } from '../utils/logger';
 import { ensureProviderLimitAvailable } from '../core/providerLimits';
 import { getProviderKeyCandidates, withProviderKey } from '../core/providerKeys';
 import { resolveModelAliasByCategory } from '../core/db';
@@ -534,7 +535,7 @@ export async function handleMedia(
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         });
-        if (!response.ok) throw new Error(await response.text());
+        if (!response.ok) throw buildProviderError(response.status, await response.text(), response.headers);
         json = await response.json() as { data?: Array<Record<string, unknown>> };
       }
 
@@ -843,8 +844,9 @@ export async function handleMedia(
           totalTokens: usageEstimate.totalTokens,
         });
         return jsonResponse(req, data);
-      } catch {
-        // Fallback to Cohere
+      } catch (primaryErr) {
+        // Fallback to Cohere — log the Mistral error so it's visible in production
+        logger.warn({ err: primaryErr }, 'Mistral embeddings failed, falling back to Cohere');
         ensureProviderLimitAvailable('cohere', usageEstimate);
         const data = await withProviderKey('cohere', async ({ key }) => {
           const response = await fetch('https://api.cohere.com/v1/embed', {

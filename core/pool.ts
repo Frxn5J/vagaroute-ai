@@ -387,6 +387,7 @@ export function handleServiceError(state: ServiceState, err: unknown): void {
 
   if (status === 413) {
     state.cooldownUntil = Date.now() + HOUR_MS;
+    setModelRateLimited(name, state.cooldownUntil);
     logger.warn({ name, status }, 'Payload too large for model');
     return;
   }

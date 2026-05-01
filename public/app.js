@@ -579,18 +579,21 @@ async function apiRequest(url, options = {}) {
   config.headers = headers;
   const response = await fetch(url, config);
 
-  if (response.status === 401 && !options.allow401) {
-    state.dashboard = null;
-    state.me = null;
-    state.mode = state.needsSetup ? 'bootstrap' : 'login';
-    render();
-    throw new Error('Sesion expirada');
-  }
-
   const contentType = response.headers.get('content-type') || '';
   const payload = contentType.includes('application/json')
     ? await response.json()
     : await response.text();
+
+  if (response.status === 401 && !options.allow401) {
+    const isAuthError = typeof payload === 'object' && payload?.error?.type === 'auth_error';
+    if (isAuthError || url.startsWith('/api/')) {
+      state.dashboard = null;
+      state.me = null;
+      state.mode = state.needsSetup ? 'bootstrap' : 'login';
+      render();
+      throw new Error('Sesion expirada');
+    }
+  }
 
   if (!response.ok) {
     const errorMessage = typeof payload === 'object' && payload?.error?.message
