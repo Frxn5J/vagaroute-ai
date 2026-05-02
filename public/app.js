@@ -3965,16 +3965,22 @@ function getQuickStartApiKeyRecord() {
 }
 
 function getQuickStartModels() {
+  const isAdminUser = state.dashboard?.auth?.isAdmin;
   const apiKey = getQuickStartApiKeyRecord();
-  const project = apiKey?.projectId
-    ? (state.dashboard?.projects || []).find((item) => item.id === apiKey.projectId)
-    : null;
+  const userProjects = state.dashboard?.projects || [];
+
+  const project = isAdminUser
+    ? null
+    : apiKey?.projectId
+      ? userProjects.find((item) => item.id === apiKey.projectId)
+      : userProjects[0] || null;
+
   const allowedModelIds = new Set(project?.allowedModelIds || []);
 
   return (state.dashboard?.pool?.models || [])
     .filter((m) => !m.paidOnly)
     .filter((m) => {
-      if (!project || project.modelAccessMode === 'all') return true;
+      if (isAdminUser || !project || project.modelAccessMode === 'all') return true;
       if (project.modelAccessMode === 'none') return false;
       return allowedModelIds.has(m.id);
     })
