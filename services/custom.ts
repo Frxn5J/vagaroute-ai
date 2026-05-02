@@ -671,8 +671,8 @@ function createCustomService(input: {
         temperature,
         max_tokens,
         top_p,
-        ...(supportsTools && tools?.length && { tools }),
-        ...(supportsTools && tool_choice !== undefined && { tool_choice }),
+        ...(tools?.length && { tools }),
+        ...(tool_choice !== undefined && { tool_choice }),
         ...(response_format && { response_format }),
       });
 
