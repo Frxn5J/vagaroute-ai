@@ -142,9 +142,13 @@ export function resolveProjectModelPolicy(auth: AuthContext | null, req: Request
     projectId = auth.apiKey.projectId;
   } else if (auth?.user.id === 'system') {
     projectId = requestedProjectId;
-  } else if (auth && requestedProjectId) {
+  } else if (auth) {
     const visibleProjects = isAdmin(auth) ? listAllProjects() : listProjectsForUser(auth.user.id);
-    projectId = visibleProjects.some((project) => project.id === requestedProjectId) ? requestedProjectId : null;
+    if (requestedProjectId && visibleProjects.some((project) => project.id === requestedProjectId)) {
+      projectId = requestedProjectId;
+    } else if (!isAdmin(auth)) {
+      projectId = visibleProjects[0]?.id ?? null;
+    }
   }
 
   const access = getProjectModelAccess(projectId);

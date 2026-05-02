@@ -232,6 +232,7 @@ async function getDashboard(cookie: string) {
     alerts: Array<{ title: string; severity: string }>;
     recentErrors: Array<{ path: string; statusCode: number; errorMessage: string | null }>;
     modelTelemetry: Array<{ id: string; requests_served: number }>;
+    pool?: { models?: Array<{ id: string }> };
     cache: { enabled: boolean; backend: string; hits: number; misses: number; entries: number; hitRate: number };
     tokenization: { mode: string; exactForCompletedResponses: boolean };
     metrics: {
@@ -661,6 +662,12 @@ describe('projects and product flows', () => {
     };
     expect(modelsPayload.data.some((item) => item.id === 'Mock/alpha')).toBe(true);
     expect(modelsPayload.data.some((item) => item.id === 'Mock/bravo')).toBe(false);
+
+    const userLogin = await loginWithPassword('project-user@example.com', 'password123');
+    expect(userLogin.response.status).toBe(200);
+    const userDashboard = await getDashboard(userLogin.cookie || '');
+    expect(userDashboard.pool?.models?.some((item) => item.id === 'Mock/alpha')).toBe(true);
+    expect(userDashboard.pool?.models?.some((item) => item.id === 'Mock/bravo')).toBe(false);
 
     const blockedChatResponse = await request('/v1/chat/completions', {
       method: 'POST',

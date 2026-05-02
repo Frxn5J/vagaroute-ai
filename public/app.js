@@ -3944,6 +3944,7 @@ function getQuickStartBaseUrl() {
 }
 
 function getQuickStartApiKey() {
+  if (state.sharedValueKind && state.sharedValueKind !== 'api-key') return '';
   // Si tenemos una key recien creada en sesion, mostrarla completa
   if (state.lastCreatedApiKey) return state.lastCreatedApiKey;
   // Fallback: hint enmascarado
@@ -3952,9 +3953,31 @@ function getQuickStartApiKey() {
   return active ? active.hint || '' : '';
 }
 
+function getQuickStartApiKeyRecord() {
+  const keys = state.dashboard?.apiKeys || [];
+  if (state.sharedValueKind !== 'api-key') return keys.find((k) => k.isActive) || null;
+  if (state.lastCreatedApiKey) {
+    const prefix = state.lastCreatedApiKey.slice(0, 16);
+    const createdKey = keys.find((k) => k.keyPrefix === prefix);
+    if (createdKey) return createdKey;
+  }
+  return keys.find((k) => k.isActive) || null;
+}
+
 function getQuickStartModels() {
+  const apiKey = getQuickStartApiKeyRecord();
+  const project = apiKey?.projectId
+    ? (state.dashboard?.projects || []).find((item) => item.id === apiKey.projectId)
+    : null;
+  const allowedModelIds = new Set(project?.allowedModelIds || []);
+
   return (state.dashboard?.pool?.models || [])
     .filter((m) => !m.paidOnly)
+    .filter((m) => {
+      if (!project || project.modelAccessMode === 'all') return true;
+      if (project.modelAccessMode === 'none') return false;
+      return allowedModelIds.has(m.id);
+    })
     .map((m) => ({ id: m.id, provider: String(m.provider || 'custom') }));
 }
 

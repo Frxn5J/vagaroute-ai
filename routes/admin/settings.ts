@@ -30,8 +30,10 @@ import { normalizeProviderId } from '../../core/usageLimits';
 import {
   buildScopedModelTelemetry,
   errorResponse,
+  filterStatesByProjectPolicy,
   jsonResponse,
   readJsonBody,
+  resolveProjectModelPolicy,
   resolveRequestMetricsScope,
   type RouteContext,
 } from '../_shared';
@@ -95,9 +97,12 @@ function buildDashboardAlerts(
   return alerts.slice(0, 12);
 }
 
-function buildDashboardPayload(auth: AuthContext) {
+function buildDashboardPayload(auth: AuthContext, req: Request) {
   const now = Date.now();
   const { scope: metricsScope, visibleProjects } = resolveRequestMetricsScope(auth);
+  const dashboardStates = isAdmin(auth)
+    ? states
+    : filterStatesByProjectPolicy(states, resolveProjectModelPolicy(auth, req));
   const metrics = getDashboardMetrics(metricsScope);
   const tokens = getTokenSummary(metricsScope);
   const providerStats = getAllProviderStats();
@@ -106,7 +111,7 @@ function buildDashboardPayload(auth: AuthContext) {
     ? getAllModelStats().sort((a, b) => b.requests_served - a.requests_served).slice(0, 100)
     : buildScopedModelTelemetry(metrics);
   const providerNames = Array.from(
-    new Set(states.map((state) => normalizeProviderId(state.service.name.split('/')[0] ?? ''))),
+    new Set(dashboardStates.map((state) => normalizeProviderId(state.service.name.split('/')[0] ?? ''))),
   );
   const userUsage = isAdmin(auth) ? getUserUsageSummaries() : getUserUsageSummaries(metricsScope);
   const projectUsage = isAdmin(auth) ? getProjectUsageSummaries() : getProjectUsageSummaries(metricsScope);
@@ -122,14 +127,14 @@ function buildDashboardPayload(auth: AuthContext) {
     },
     settings: getAppSettings(),
     pool: {
-      total: states.length,
-      available: states.filter((state) => {
+      total: dashboardStates.length,
+      available: dashboardStates.filter((state) => {
         const providerCooldownUntil =
           providerCooldownMap.get(normalizeProviderId(state.service.name.split('/')[0] ?? ''))?.cooldownUntil ?? 0;
         return !state.disabled && Math.max(state.cooldownUntil, providerCooldownUntil) <= now;
       }).length,
-      disabled: states.filter((state) => state.disabled).length,
-      cooldown: states.filter((state) => {
+      disabled: dashboardStates.filter((state) => state.disabled).length,
+      cooldown: dashboardStates.filter((state) => {
         const providerCooldownUntil =
           providerCooldownMap.get(normalizeProviderId(state.service.name.split('/')[0] ?? ''))?.cooldownUntil ?? 0;
         return !state.disabled && Math.max(state.cooldownUntil, providerCooldownUntil) > now;
@@ -141,10 +146,10 @@ function buildDashboardPayload(auth: AuthContext) {
           status: (providerState?.cooldownUntil ?? 0) > now ? 'cooldown' : 'available',
           cooldownUntil: providerState?.cooldownUntil ?? 0,
           lastReason: providerState?.lastReason ?? null,
-          models: states.filter((s) => normalizeProviderId(s.service.name.split('/')[0] ?? '') === providerId).length,
+          models: dashboardStates.filter((s) => normalizeProviderId(s.service.name.split('/')[0] ?? '') === providerId).length,
         };
       }),
-      models: states.map((state) => ({
+      models: dashboardStates.map((state) => ({
         id: state.service.name,
         provider: state.service.name.split('/')[0] ?? 'Unknown',
         supportsTools: state.service.supportsTools,
@@ -212,7 +217,7 @@ export async function handleSettings(
   // ── GET /api/dashboard ────────────────────────────────────────────────────
 
   if (req.method === 'GET' && pathname === '/api/dashboard') {
-    return jsonResponse(req, buildDashboardPayload(auth));
+    return jsonResponse(req, buildDashboardPayload(auth, req));
   }
 
   // ── GET /api/settings ─────────────────────────────────────────────────────
