@@ -3969,10 +3969,10 @@ function getQuickStartModels() {
   const apiKey = getQuickStartApiKeyRecord();
   const userProjects = state.dashboard?.projects || [];
 
-  const project = isAdminUser
-    ? null
-    : apiKey?.projectId
-      ? userProjects.find((item) => item.id === apiKey.projectId)
+  const project = apiKey?.projectId
+    ? userProjects.find((item) => item.id === apiKey.projectId) || null
+    : isAdminUser
+      ? null
       : userProjects[0] || null;
 
   const allowedModelIds = new Set(project?.allowedModelIds || []);
@@ -3980,7 +3980,7 @@ function getQuickStartModels() {
   return (state.dashboard?.pool?.models || [])
     .filter((m) => !m.paidOnly)
     .filter((m) => {
-      if (isAdminUser || !project || project.modelAccessMode === 'all') return true;
+      if (!project || project.modelAccessMode === 'all') return true;
       if (project.modelAccessMode === 'none') return false;
       return allowedModelIds.has(m.id);
     })
