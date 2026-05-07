@@ -72,6 +72,39 @@ export async function* withErrorBoundary(
   }
 }
 
+/** Keeps SSE connections active while upstream providers are slow to emit chunks. */
+export async function* withSSEHeartbeat(
+  source: AsyncIterable<string>,
+  intervalMs = 15_000,
+): AsyncGenerator<string> {
+  const iterator = source[Symbol.asyncIterator]();
+  let pending = iterator.next();
+
+  try {
+    while (true) {
+      const result = await Promise.race([
+        pending,
+        new Promise<'heartbeat'>((resolve) => setTimeout(() => resolve('heartbeat'), intervalMs)),
+      ]);
+
+      if (result === 'heartbeat') {
+        yield ': ping\n\n';
+        continue;
+      }
+
+      if (result.done) {
+        return;
+      }
+
+      const value = result.value;
+      pending = iterator.next();
+      yield value;
+    }
+  } finally {
+    await iterator.return?.();
+  }
+}
+
 /**
  * Collects a stream of SSE lines and assembles a complete message
  * (including tool_calls for agent use cases).

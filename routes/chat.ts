@@ -7,7 +7,7 @@ import {
   getCachedResponse,
   setCachedResponse,
 } from '../core/responseCache';
-import { collectSSE, genId, observeSSE, withErrorBoundary } from '../utils/stream';
+import { collectSSE, genId, observeSSE, withErrorBoundary, withSSEHeartbeat } from '../utils/stream';
 import { withCors } from '../utils/cors';
 import { getRequestId } from '../utils/requestContext';
 import type { ChatRequest } from '../types';
@@ -140,7 +140,7 @@ export async function handleChat(
           });
         },
       });
-      return new Response(withErrorBoundary(trackedStream, serviceName), {
+      return new Response(withSSEHeartbeat(withErrorBoundary(trackedStream, serviceName)), {
         headers: withCors(req, {
           'Content-Type': 'text/event-stream',
           'Cache-Control': 'no-cache',
