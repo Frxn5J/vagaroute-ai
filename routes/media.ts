@@ -216,6 +216,9 @@ function cloneFormDataWithout(
 
 async function requestQwenJson<T>(path: string, payload: unknown): Promise<T> {
   return await withProviderKey('qwenchat', async ({ key }) => {
+    console.log('[QWEN DEBUG] Path:', path);
+    console.log('[QWEN DEBUG] Payload:', JSON.stringify(payload));
+    
     const response = await fetch(`${QWEN_API_BASE_URL}${path}`, {
       method: 'POST',
       headers: {
@@ -225,11 +228,17 @@ async function requestQwenJson<T>(path: string, payload: unknown): Promise<T> {
       body: JSON.stringify(payload),
     });
 
+    console.log('[QWEN DEBUG] Response status:', response.status);
+    const rawText = await response.text();
+    console.log('[QWEN DEBUG] Raw response:', rawText);
+
     if (!response.ok) {
-      throw buildProviderError(response.status, await response.text(), response.headers);
+      throw buildProviderError(response.status, rawText, response.headers);
     }
 
-    return await response.json() as T;
+    const json = JSON.parse(rawText) as T;
+    console.log('[QWEN DEBUG] Parsed JSON:', JSON.stringify(json));
+    return json;
   });
 }
 
