@@ -1,44 +1,58 @@
-# dependencies (bun install)
-node_modules
+```
+# Dependencies
+node_modules/
 
-# output
-out
-dist
-*.tgz
+# Logs and temp files
+*.log
+*.tmp
 
-# code coverage
-coverage
-*.lcov
-
-# logs
-logs
-_.log
-report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
-
-# dotenv environment variable files
+# Environment
 .env
-.env.development.local
-.env.test.local
-.env.production.local
 .env.local
-router.master.key
+*.env.*
 
-# local database files
-*.sqlite
-*.sqlite-shm
-*.sqlite-wal
-*.db
-*.db-shm
-*.db-wal
+# Editors
+.vscode/
+.idea/
 
-# caches
-.eslintcache
-.cache
-*.tsbuildinfo
-.tmp
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
 
-# IntelliJ based IDEs
-.idea
+# Build outputs
+dist/
+build/
+*.min.js
+*.bundle.js
 
-# Finder (MacOS) folder config
+# OS generated files
 .DS_Store
+Thumbs.db
+
+# Coverage reports
+coverage/
+htmlcov/
+.coverage
+
+# Testing
+.mypy_cache/
+.pytest_cache/
+.nyc_output/
+
+# Java/Maven
+target/
+.gradle/
+*.class
+
+# Go
+*.exe
+*.dll
+*.so
+
+# Temporary files
+*.tmp
+*.temp
+*~
+```

@@ -5,6 +5,7 @@ import { getAppSettings } from './core/db';
 import { initializePool, states } from './core/pool';
 import { getAllProviderStats } from './core/db';
 import { normalizeProviderId } from './core/usageLimits';
+import { scheduleMidnightModelRefresh } from './core/midnightScheduler';
 import { authenticateRequest, isAdmin } from './middlewares/auth';
 import { checkRateLimit } from './middlewares/rateLimit';
 import { getCorsRejectionResponse, withCors } from './utils/cors';
@@ -38,6 +39,7 @@ type RequestServer = { requestIP(request: Request): { address: string } | null }
 
 if (!appConfig.isTest) {
   await initializePool();
+  scheduleMidnightModelRefresh();
 }
 
 // ─── Static file serving ───────────────────────────────────────────────────

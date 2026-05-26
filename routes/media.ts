@@ -321,9 +321,20 @@ async function convertImageUrlsToB64Json<T extends { data?: Array<Record<string,
   }
 
   const convertedData = await Promise.all(payload.data.map(async (item) => {
+    // Si ya tiene b64_json, lo dejamos como está
+    if (typeof item.b64_json === 'string') {
+      return item;
+    }
+
     const url = typeof item.url === 'string' ? item.url : null;
     if (!url) {
-      return item;
+      // Si no hay url ni b64_json, lanzamos error descriptivo
+      throw Object.assign(new Error('Failed to extract image URL from response'), {
+        code: 'image_url_missing',
+        httpStatus: 500,
+        type: 'api_error',
+        param: 'image_url_missing',
+      });
     }
 
     const response = await fetch(url);

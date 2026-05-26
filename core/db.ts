@@ -281,6 +281,7 @@ export interface AppSettings {
   defaultChatModel: string;
   enableUserKeyCreation: boolean;
   openRouterFreeOnly: boolean;
+  serverTimezone: string;
 }
 
 interface AppSettingRow {
@@ -703,6 +704,7 @@ const DEFAULT_APP_SETTINGS = {
   default_chat_model: 'auto',
   enable_user_key_creation: '1',
   openrouter_free_only: '0',
+  server_timezone: 'UTC',
 } as const satisfies Record<string, string>;
 
 const seedDefaultSettings = db.prepare(`
@@ -1157,6 +1159,7 @@ export function getAppSettings(): AppSettings {
     defaultChatModel: settings.default_chat_model ?? DEFAULT_APP_SETTINGS.default_chat_model,
     enableUserKeyCreation: getBooleanSetting(settings, 'enable_user_key_creation', true),
     openRouterFreeOnly: getBooleanSetting(settings, 'openrouter_free_only', false),
+    serverTimezone: settings.server_timezone ?? DEFAULT_APP_SETTINGS.server_timezone,
   };
 }
 
@@ -1172,6 +1175,7 @@ export function updateAppSettings(input: Partial<AppSettings>): AppSettings {
   if (input.defaultChatModel !== undefined) updates.default_chat_model = input.defaultChatModel.trim() || 'auto';
   if (input.enableUserKeyCreation !== undefined) updates.enable_user_key_creation = input.enableUserKeyCreation ? '1' : '0';
   if (input.openRouterFreeOnly !== undefined) updates.openrouter_free_only = input.openRouterFreeOnly ? '1' : '0';
+  if (input.serverTimezone !== undefined) updates.server_timezone = input.serverTimezone.trim() || 'UTC';
 
   const upsert = db.prepare(`
     INSERT INTO app_settings (key, value, updated_at)

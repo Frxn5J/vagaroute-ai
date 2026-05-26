@@ -240,6 +240,7 @@ export async function handleSettings(
         defaultChatModel?: string;
         enableUserKeyCreation?: boolean;
         openRouterFreeOnly?: boolean;
+        serverTimezone?: string;
       }>(req);
       const settings = updateAppSettings(body);
       await reloadPool('settings-updated');
