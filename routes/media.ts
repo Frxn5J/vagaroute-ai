@@ -214,18 +214,33 @@ function cloneFormDataWithout(
   return cloned;
 }
 
-async function requestQwenJson<T>(path: string, payload: unknown): Promise<T> {
+async function requestQwenJson<T>(path: string, payload: unknown, useFormData = false): Promise<T> {
   return await withProviderKey('qwenchat', async ({ key }) => {
     console.log('[QWEN DEBUG] Path:', path);
     console.log('[QWEN DEBUG] Payload:', JSON.stringify(payload));
+    console.log('[QWEN DEBUG] Use FormData:', useFormData);
+    
+    let body: BodyInit | null = null;
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${key}`,
+    };
+    
+    if (useFormData) {
+      const formData = new FormData();
+      for (const [key, value] of Object.entries(payload as Record<string, unknown>)) {
+        formData.append(key, value as string);
+      }
+      body = formData;
+      // No set Content-Type header, let fetch set it with boundary
+    } else {
+      headers['Content-Type'] = 'application/json';
+      body = JSON.stringify(payload);
+    }
     
     const response = await fetch(`${QWEN_API_BASE_URL}${path}`, {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${key}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
+      headers,
+      body,
     });
 
     console.log('[QWEN DEBUG] Response status:', response.status);
@@ -658,9 +673,15 @@ export async function handleMedia(
         if (upstreamModel) {
           payload.model = upstreamModel;
         }
+        if (body.response_format) {
+          payload.response_format = body.response_format;
+        } else {
+          payload.response_format = 'url';
+        }
 
         ensureProviderLimitAvailable('qwenchat', usageEstimate);
-        json = await requestQwenJson<{ data?: Array<Record<string, unknown>> }>('/images/edits', payload);
+        console.log('[QWEN DEBUG] Sending image edit request with FormData:', true);
+        json = await requestQwenJson<{ data?: Array<Record<string, unknown>> }>('/images/edits', payload, true);
         if (body.response_format === 'b64_json') {
           json = await convertImageUrlsToB64Json(json);
         }
