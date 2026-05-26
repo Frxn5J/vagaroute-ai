@@ -1,32 +1,149 @@
-```ts
-// Example media routes for upload handling
-import { Hono } from 'hono';
-import { zValidator } from '@hono/zod-validator';
-import { z } from 'zod';
+```
+# Dependencies
+node_modules/
 
-const app = new Hono();
+# Build artifacts
+dist/
+build/
+target/
 
-// POST /api/media/upload - Upload media files
-app.post('/upload', zValidator('form', z.object({
-  file: z.instanceof(File),
-})), async (c) => {
-  const formData = c.req.valid('form');
-  const file = formData.file;
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.py.class
+.Python
+env/
+venv/
+.venv/
+.ENV
+.python-version
 
-  // Process file upload (implementation depends on your storage solution)
-  // e.g., save to local disk, cloud storage, etc.
-  
-  return c.json({ success: true, message: 'File uploaded successfully' });
-});
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
-// GET /api/media/:id - Retrieve media file
-app.get('/:id{[0-9]+}', async (c) => {
-  const id = Number(c.req.param('id'));
-  
-  // Retrieve file logic here
-  
-  return c.json({ id, url: `/uploads/${id}` });
-});
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+iTunes_Control.db
+Thumbs.db
 
-export default app;
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment variables
+.env
+.env.local
+.env.*
+
+# Coverage reports
+coverage/
+htmlcov/
+.coverage
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+
+# Compressed files
+*.zip
+*.gz
+*.tar
+*.tgz
+*.bz2
+*.xz
+*.7z
+*.rar
+*.zst
+*.lz4
+*.lzh
+*.cab
+*.arj
+*.rpm
+*.deb
+*.Z
+*.lz
+*.lzo
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.tar.zst
+
+# MyPy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# PyTest
+.pytest_cache/
+
+# Gradle
+.gradle/
+build/
+
+# Go
+*.o
+*.a
+*.so
+*.exe
+*.dll
+*.dylib
+*.test
+*.prof
+
+# Java
+*.class
+*.jar
+*.war
+*.ear
+*.nar
+hs_err_pid*
+replay_pid*
+
+# C/C++
+*.i
+*.ii
+*.s
+*.mod
+*.smod
+*.ko
+*.obj
+*.ilk
+*.lib
+*.map
+*.pdb
+*.stackdump
+*.def
+*.exp
+*.gch
+*.inl
+*.la
+*.lai
+*.dylib
+*.lo
+*.dpi
+*.dpu
+*.ncb
+*.sdf
+*.suo
+*.xlf
+
+# Rust
+*.rlib
+*.so
+*.dylib
+*.dSYM/
 ```

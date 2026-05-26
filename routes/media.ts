@@ -226,12 +226,41 @@ async function requestQwenJson<T>(path: string, payload: unknown, useFormData = 
     };
     
     if (useFormData) {
-      const formData = new FormData();
-      for (const [key, value] of Object.entries(payload as Record<string, unknown>)) {
-        formData.append(key, value as string);
+      // For Cloudflare Workers, we need to manually create multipart/form-data
+      const boundary = '----WebKitFormBoundary' + Math.random().toString(36).slice(2);
+      const formDataParts: string[] = [];
+      const payloadRecord = payload as Record<string, unknown>;
+      
+      for (const [key, value] of Object.entries(payloadRecord)) {
+        const strValue = String(value);
+        
+        // Check if this is a base64 image that needs special handling
+        if (key === 'image' && strValue.startsWith('data:')) {
+          // Extract base64 data and filename
+          const match = strValue.match(/^data:([^;]+);base64,(.+)$/);
+          if (match) {
+            const mimeType = match[1];
+            const base64Data = match[2];
+            const filename = `image.${mimeType.split('/').pop() || 'png'}`;
+            
+            formDataParts.push(`--${boundary}`);
+            formDataParts.push(`Content-Disposition: form-data; name="${key}"; filename="${filename}"`);
+            formDataParts.push(`Content-Type: ${mimeType}`);
+            formDataParts.push('');
+            formDataParts.push(base64Data);
+            continue;
+          }
+        }
+        
+        formDataParts.push(`--${boundary}`);
+        formDataParts.push(`Content-Disposition: form-data; name="${key}"`);
+        formDataParts.push('');
+        formDataParts.push(strValue);
       }
-      body = formData;
-      // No set Content-Type header, let fetch set it with boundary
+      formDataParts.push(`--${boundary}--`);
+      
+      body = formDataParts.join('\r\n');
+      headers['Content-Type'] = `multipart/form-data; boundary=${boundary}`;
     } else {
       headers['Content-Type'] = 'application/json';
       body = JSON.stringify(payload);
