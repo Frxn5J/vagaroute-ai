@@ -65,6 +65,11 @@ export async function readJsonBody<T>(req: Request): Promise<T> {
   return await req.json() as T;
 }
 
+/** Guard de ruta admin: devuelve un 403 listo para retornar, o null si pasa. */
+export function requireAdmin(req: Request, auth: AuthContext): Response | null {
+  return isAdmin(auth) ? null : errorResponse(req, 403, 'Solo administradores', 'forbidden');
+}
+
 // ─── Error helpers ─────────────────────────────────────────────────────────
 
 export function buildProviderError(

@@ -5,7 +5,6 @@ import { states } from '../core/pool';
 import { normalizeProviderId } from '../core/usageLimits';
 import {
   buildScopedModelTelemetry,
-  errorResponse,
   filterStatesByProjectPolicy,
   jsonResponse,
   resolveProjectModelPolicy,
@@ -105,54 +104,6 @@ export async function handleModels(
           : 'available',
     }));
     return jsonResponse(req, report);
-  }
-
-  return null;
-}
-
-// ── Admin: pool reset ─────────────────────────────────────────────────────
-// Kept here because it operates on the model pool, not on a specific resource.
-
-export async function handleAdminReset(
-  req: Request,
-  auth: AuthContext,
-  ctx: RouteContext,
-): Promise<Response | null> {
-  const { pathname } = ctx;
-  const { clearAllProviderRateLimits, clearModelRateLimit } = await import('../core/db');
-  const { states: poolStates, resetStates } = await import('../core/pool');
-
-  if (req.method === 'POST' && pathname.startsWith('/admin/reset')) {
-    if (!isAdmin(auth)) return errorResponse(req, 403, 'Solo administradores', 'forbidden');
-    const modelName = decodeURIComponent(
-      pathname.replace('/admin/reset/', '').replace('/admin/reset', '').trim(),
-    );
-    if (resetStates(modelName || undefined)) {
-      if (modelName) {
-        clearModelRateLimit(modelName);
-      } else {
-        poolStates.forEach((state) => clearModelRateLimit(state.service.name));
-        clearAllProviderRateLimits();
-      }
-      return jsonResponse(req, { ok: true, reset: modelName || 'all' });
-    }
-    return errorResponse(req, 404, `Modelo '${modelName}' no encontrado`, 'not_found');
-  }
-
-  const adminResetMatch = pathname.match(/^\/api\/admin\/reset(?:\/(.*))?$/);
-  if (req.method === 'POST' && adminResetMatch) {
-    if (!isAdmin(auth)) return errorResponse(req, 403, 'Solo administradores', 'forbidden');
-    const modelName = decodeURIComponent(adminResetMatch[1] ?? '').trim();
-    if (resetStates(modelName || undefined)) {
-      if (modelName) {
-        clearModelRateLimit(modelName);
-      } else {
-        poolStates.forEach((state) => clearModelRateLimit(state.service.name));
-        clearAllProviderRateLimits();
-      }
-      return jsonResponse(req, { ok: true, reset: modelName || 'all' });
-    }
-    return errorResponse(req, 404, `Modelo '${modelName}' no encontrado`, 'not_found');
   }
 
   return null;

@@ -1,12 +1,11 @@
 import type { AuthContext } from '../../middlewares/auth';
-import { isAdmin } from '../../middlewares/auth';
 import {
   deleteModelTierOverride,
   listModelTierOverrides,
   upsertModelTierOverride,
 } from '../../core/db';
 import { reloadPool, states } from '../../core/pool';
-import { errorResponse, jsonResponse, readJsonBody, type RouteContext } from '../_shared';
+import { errorResponse, jsonResponse, readJsonBody, requireAdmin, type RouteContext } from '../_shared';
 
 export async function handleModelTiers(
   req: Request,
@@ -18,14 +17,16 @@ export async function handleModelTiers(
   // ── GET /api/model-tiers ──────────────────────────────────────────────────
 
   if (req.method === 'GET' && pathname === '/api/model-tiers') {
-    if (!isAdmin(auth)) return errorResponse(req, 403, 'Solo administradores', 'forbidden');
+    const denied = requireAdmin(req, auth);
+    if (denied) return denied;
     return jsonResponse(req, { modelTierOverrides: listModelTierOverrides() });
   }
 
   // ── PUT /api/model-tiers ──────────────────────────────────────────────────
 
   if (req.method === 'PUT' && pathname === '/api/model-tiers') {
-    if (!isAdmin(auth)) return errorResponse(req, 403, 'Solo administradores', 'forbidden');
+    const denied = requireAdmin(req, auth);
+    if (denied) return denied;
     try {
       const body = await readJsonBody<{ modelId: string; tier: number }>(req);
       const modelId = body.modelId?.trim();
@@ -48,7 +49,8 @@ export async function handleModelTiers(
 
   const modelTierMatch = pathname.match(/^\/api\/model-tiers\/(.+)$/);
   if (req.method === 'DELETE' && modelTierMatch) {
-    if (!isAdmin(auth)) return errorResponse(req, 403, 'Solo administradores', 'forbidden');
+    const denied = requireAdmin(req, auth);
+    if (denied) return denied;
     const modelId = decodeURIComponent(modelTierMatch[1] ?? '').trim();
     const deleted = deleteModelTierOverride(modelId);
     if (!deleted) return errorResponse(req, 404, `No hay override para '${modelId}'`, 'not_found');

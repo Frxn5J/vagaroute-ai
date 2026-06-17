@@ -1,8 +1,7 @@
 import type { AuthContext } from '../../middlewares/auth';
-import { isAdmin } from '../../middlewares/auth';
 import { listRateLimitRules, upsertRateLimitRule } from '../../core/db';
 import { normalizeProviderId, sanitizeLimitRule } from '../../core/usageLimits';
-import { errorResponse, jsonResponse, readJsonBody, type RouteContext } from '../_shared';
+import { errorResponse, jsonResponse, readJsonBody, requireAdmin, type RouteContext } from '../_shared';
 
 export async function handleRateLimits(
   req: Request,
@@ -15,7 +14,8 @@ export async function handleRateLimits(
 
   const providerLimitMatch = pathname.match(/^\/api\/rate-limits\/provider\/([^/]+)$/);
   if (req.method === 'PUT' && providerLimitMatch) {
-    if (!isAdmin(auth)) return errorResponse(req, 403, 'Solo administradores', 'forbidden');
+    const denied = requireAdmin(req, auth);
+    if (denied) return denied;
     try {
       const body = await readJsonBody<{
         mode?: unknown;
@@ -39,7 +39,8 @@ export async function handleRateLimits(
   // ── PUT /api/rate-limits/model ────────────────────────────────────────────
 
   if (req.method === 'PUT' && pathname === '/api/rate-limits/model') {
-    if (!isAdmin(auth)) return errorResponse(req, 403, 'Solo administradores', 'forbidden');
+    const denied = requireAdmin(req, auth);
+    if (denied) return denied;
     try {
       const body = await readJsonBody<{
         modelId?: string;
@@ -66,7 +67,8 @@ export async function handleRateLimits(
   // ── GET /api/rate-limits (bonus — lista todas las reglas) ─────────────────
 
   if (req.method === 'GET' && pathname === '/api/rate-limits') {
-    if (!isAdmin(auth)) return errorResponse(req, 403, 'Solo administradores', 'forbidden');
+    const denied = requireAdmin(req, auth);
+    if (denied) return denied;
     return jsonResponse(req, {
       providerRules: listRateLimitRules('provider'),
       modelRules: listRateLimitRules('model'),

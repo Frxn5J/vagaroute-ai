@@ -9,7 +9,7 @@ import {
   updateProject,
 } from '../../core/db';
 import { hashToken, randomToken } from '../../utils/crypto';
-import { errorResponse, jsonResponse, readJsonBody, type RouteContext } from '../_shared';
+import { errorResponse, jsonResponse, readJsonBody, requireAdmin, type RouteContext } from '../_shared';
 
 export async function handleProjects(
   req: Request,
@@ -29,7 +29,8 @@ export async function handleProjects(
   // ── POST /api/projects ────────────────────────────────────────────────────
 
   if (req.method === 'POST' && pathname === '/api/projects') {
-    if (!isAdmin(auth)) return errorResponse(req, 403, 'Solo administradores', 'forbidden');
+    const denied = requireAdmin(req, auth);
+    if (denied) return denied;
     try {
       const body = await readJsonBody<{
         name: string;
@@ -58,7 +59,8 @@ export async function handleProjects(
 
   const projectMatch = pathname.match(/^\/api\/projects\/([^/]+)$/);
   if (req.method === 'PATCH' && projectMatch) {
-    if (!isAdmin(auth)) return errorResponse(req, 403, 'Solo administradores', 'forbidden');
+    const denied = requireAdmin(req, auth);
+    if (denied) return denied;
     const projectId = projectMatch[1] ?? '';
     if (!getProjectById(projectId)) return errorResponse(req, 404, 'Proyecto no encontrado', 'not_found');
     try {
@@ -81,7 +83,8 @@ export async function handleProjects(
   // ── POST /api/invitations ─────────────────────────────────────────────────
 
   if (req.method === 'POST' && pathname === '/api/invitations') {
-    if (!isAdmin(auth)) return errorResponse(req, 403, 'Solo administradores', 'forbidden');
+    const denied = requireAdmin(req, auth);
+    if (denied) return denied;
     try {
       const body = await readJsonBody<{
         email?: string | null;

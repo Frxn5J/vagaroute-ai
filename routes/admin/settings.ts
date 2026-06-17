@@ -33,6 +33,7 @@ import {
   filterStatesByProjectPolicy,
   jsonResponse,
   readJsonBody,
+  requireAdmin,
   resolveProjectModelPolicy,
   resolveRequestMetricsScope,
   type RouteContext,
@@ -229,7 +230,8 @@ export async function handleSettings(
   // ── PUT /api/settings ─────────────────────────────────────────────────────
 
   if (req.method === 'PUT' && pathname === '/api/settings') {
-    if (!isAdmin(auth)) return errorResponse(req, 403, 'Solo administradores', 'forbidden');
+    const denied = requireAdmin(req, auth);
+    if (denied) return denied;
     try {
       const body = await readJsonBody<{
         appName?: string;
