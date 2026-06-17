@@ -1,5 +1,4 @@
 import type { AuthContext } from '../../middlewares/auth';
-import { isAdmin } from '../../middlewares/auth';
 import {
   getUserById,
   listUsers,
@@ -7,7 +6,7 @@ import {
   updateUserProductSettings,
 } from '../../core/db';
 import { requestPasswordReset } from '../../middlewares/auth';
-import { errorResponse, jsonResponse, readJsonBody, type RouteContext } from '../_shared';
+import { errorResponse, jsonResponse, readJsonBody, requireAdmin, type RouteContext } from '../_shared';
 
 export async function handleUsers(
   req: Request,
@@ -19,14 +18,16 @@ export async function handleUsers(
   // ── GET /api/users ────────────────────────────────────────────────────────
 
   if (req.method === 'GET' && pathname === '/api/users') {
-    if (!isAdmin(auth)) return errorResponse(req, 403, 'Solo administradores', 'forbidden');
+    const denied = requireAdmin(req, auth);
+    if (denied) return denied;
     return jsonResponse(req, { users: listUsers() });
   }
 
   // ── POST /api/users ───────────────────────────────────────────────────────
 
   if (req.method === 'POST' && pathname === '/api/users') {
-    if (!isAdmin(auth)) return errorResponse(req, 403, 'Solo administradores', 'forbidden');
+    const denied = requireAdmin(req, auth);
+    if (denied) return denied;
     try {
       const { createUserWithDefaultKey } = await import('../../middlewares/auth');
       const body = await readJsonBody<{
@@ -48,7 +49,8 @@ export async function handleUsers(
 
   const userMatch = pathname.match(/^\/api\/users\/([^/]+)$/);
   if (req.method === 'PATCH' && userMatch) {
-    if (!isAdmin(auth)) return errorResponse(req, 403, 'Solo administradores', 'forbidden');
+    const denied = requireAdmin(req, auth);
+    if (denied) return denied;
     const user = getUserById(userMatch[1] ?? '');
     if (!user) return errorResponse(req, 404, 'Usuario no encontrado', 'not_found');
     try {
@@ -78,7 +80,8 @@ export async function handleUsers(
 
   const userResetMatch = pathname.match(/^\/api\/users\/([^/]+)\/password-reset$/);
   if (req.method === 'POST' && userResetMatch) {
-    if (!isAdmin(auth)) return errorResponse(req, 403, 'Solo administradores', 'forbidden');
+    const denied = requireAdmin(req, auth);
+    if (denied) return denied;
     const user = getUserById(userResetMatch[1] ?? '');
     if (!user) return errorResponse(req, 404, 'Usuario no encontrado', 'not_found');
     const result = await requestPasswordReset({ email: user.email, requestedByUserId: auth.user.id });

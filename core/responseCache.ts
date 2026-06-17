@@ -15,8 +15,6 @@ interface CachedResponseRow {
   status_code: number;
   created_at: number;
   expires_at: number;
-  hit_count: number;
-  last_hit_at: number | null;
 }
 
 export interface CachedResponseEntry {
@@ -32,8 +30,6 @@ export interface CachedResponseEntry {
   statusCode: number;
   createdAt: number;
   expiresAt: number;
-  hitCount: number;
-  lastHitAt: number | null;
 }
 
 export interface ResponseCacheStats {
@@ -96,9 +92,7 @@ const upsertCacheEntry = db.prepare(`
     total_tokens,
     status_code,
     created_at,
-    expires_at,
-    hit_count,
-    last_hit_at
+    expires_at
   )
   VALUES (
     $cacheKey,
@@ -112,9 +106,7 @@ const upsertCacheEntry = db.prepare(`
     $totalTokens,
     $statusCode,
     $createdAt,
-    $expiresAt,
-    $hitCount,
-    $lastHitAt
+    $expiresAt
   )
   ON CONFLICT(cache_key) DO UPDATE SET
     scope_key = excluded.scope_key,
@@ -127,17 +119,7 @@ const upsertCacheEntry = db.prepare(`
     total_tokens = excluded.total_tokens,
     status_code = excluded.status_code,
     created_at = excluded.created_at,
-    expires_at = excluded.expires_at,
-    hit_count = excluded.hit_count,
-    last_hit_at = excluded.last_hit_at
-`);
-
-const touchCacheHit = db.prepare(`
-  UPDATE response_cache_entries
-  SET
-    hit_count = hit_count + 1,
-    last_hit_at = $now
-  WHERE cache_key = $cacheKey
+    expires_at = excluded.expires_at
 `);
 
 const deleteExpiredCacheEntries = db.prepare(`
@@ -167,8 +149,6 @@ function toCachedResponseEntry(row: CachedResponseRow): CachedResponseEntry {
     statusCode: row.status_code,
     createdAt: row.created_at,
     expiresAt: row.expires_at,
-    hitCount: row.hit_count,
-    lastHitAt: row.last_hit_at,
   };
 }
 
@@ -237,15 +217,8 @@ export function getCachedResponse(cacheKey: string, scopeKey?: string | null): C
   const now = Date.now();
   const memoryEntry = memoryCache.get(cacheKey);
   if (memoryEntry && memoryEntry.expiresAt > now) {
-    touchCacheHit.run({ $cacheKey: cacheKey, $now: now });
     incrementStat('hits', memoryEntry.scopeKey);
-    const updated = {
-      ...memoryEntry,
-      hitCount: memoryEntry.hitCount + 1,
-      lastHitAt: now,
-    };
-    memoryCache.set(cacheKey, updated);
-    return updated;
+    return memoryEntry;
   }
 
   if (memoryEntry) {
@@ -261,13 +234,8 @@ export function getCachedResponse(cacheKey: string, scopeKey?: string | null): C
     return null;
   }
 
-  touchCacheHit.run({ $cacheKey: cacheKey, $now: now });
   incrementStat('hits', row.scope_key);
-  const entry = toCachedResponseEntry({
-    ...row,
-    hit_count: row.hit_count + 1,
-    last_hit_at: now,
-  });
+  const entry = toCachedResponseEntry(row);
   cacheInMemory(entry);
   return entry;
 }
@@ -300,8 +268,6 @@ export function setCachedResponse(input: {
     statusCode: input.statusCode,
     createdAt: now,
     expiresAt: now + ttlMs,
-    hitCount: 0,
-    lastHitAt: null,
   };
 
   upsertCacheEntry.run({
@@ -317,8 +283,6 @@ export function setCachedResponse(input: {
     $statusCode: entry.statusCode,
     $createdAt: entry.createdAt,
     $expiresAt: entry.expiresAt,
-    $hitCount: entry.hitCount,
-    $lastHitAt: entry.lastHitAt,
   });
   cacheInMemory(entry);
   incrementStat('stores', entry.scopeKey);
@@ -338,23 +302,19 @@ export function getResponseCacheStats(input?: { userId?: string | null }): Respo
   const scopeMarker = scopedUserId ? `:${scopedUserId}:` : null;
   const row = scopedUserId
     ? db.query(`
-      SELECT
-        COUNT(*) AS entries,
-        COALESCE(SUM(hit_count), 0) AS hits
+      SELECT COUNT(*) AS entries
       FROM response_cache_entries
       WHERE expires_at > $now
         AND INSTR(scope_key, $scopeMarker) > 0
     `).get({
       $now: now,
       $scopeMarker: scopeMarker,
-    }) as { entries: number; hits: number | null } | null
+    }) as { entries: number } | null
     : db.query(`
-      SELECT
-        COUNT(*) AS entries,
-        COALESCE(SUM(hit_count), 0) AS hits
+      SELECT COUNT(*) AS entries
       FROM response_cache_entries
       WHERE expires_at > $now
-    `).get({ $now: now }) as { entries: number; hits: number | null } | null;
+    `).get({ $now: now }) as { entries: number } | null;
 
   const statsRow = scopedUserId
     ? db.query(`
@@ -383,8 +343,7 @@ export function getResponseCacheStats(input?: { userId?: string | null }): Respo
       FROM response_cache_stats
     `).get() as { hits: number | null; misses: number | null; stores: number | null } | null;
 
-  const entryHits = Number(row?.hits ?? 0);
-  const hits = Math.max(Number(statsRow?.hits ?? 0), entryHits);
+  const hits = Number(statsRow?.hits ?? 0);
   const misses = Number(statsRow?.misses ?? 0);
   const stores = Number(statsRow?.stores ?? 0);
   const totalLookups = hits + misses;

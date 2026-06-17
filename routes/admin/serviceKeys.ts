@@ -1,11 +1,10 @@
 import type { AuthContext } from '../../middlewares/auth';
-import { isAdmin } from '../../middlewares/auth';
 import { createServiceApiKey, deleteServiceApiKey, updateServiceApiKey } from '../../core/db';
 import { listConfiguredProviderKeys } from '../../core/providerKeys';
 import { reloadPool } from '../../core/pool';
 import { encryptSecret, hashToken, maskSecret, randomToken } from '../../utils/crypto';
 import type { ProviderName } from '../../core/providerKeys';
-import { errorResponse, jsonResponse, readJsonBody, type RouteContext } from '../_shared';
+import { errorResponse, jsonResponse, readJsonBody, requireAdmin, type RouteContext } from '../_shared';
 
 
 export async function handleServiceKeys(
@@ -18,14 +17,16 @@ export async function handleServiceKeys(
   // ── GET /api/service-keys ─────────────────────────────────────────────────
 
   if (req.method === 'GET' && pathname === '/api/service-keys') {
-    if (!isAdmin(auth)) return errorResponse(req, 403, 'Solo administradores', 'forbidden');
+    const denied = requireAdmin(req, auth);
+    if (denied) return denied;
     return jsonResponse(req, { serviceKeys: listConfiguredProviderKeys() });
   }
 
   // ── POST /api/service-keys ────────────────────────────────────────────────
 
   if (req.method === 'POST' && pathname === '/api/service-keys') {
-    if (!isAdmin(auth)) return errorResponse(req, 403, 'Solo administradores', 'forbidden');
+    const denied = requireAdmin(req, auth);
+    if (denied) return denied;
     try {
       const body = await readJsonBody<{ provider: ProviderName; name: string; value: string; priority?: number }>(req);
       if (!body.provider || !body.name?.trim() || !body.value?.trim()) {
@@ -55,7 +56,8 @@ export async function handleServiceKeys(
 
   const serviceKeyMatch = pathname.match(/^\/api\/service-keys\/([^/]+)$/);
   if (req.method === 'PATCH' && serviceKeyMatch) {
-    if (!isAdmin(auth)) return errorResponse(req, 403, 'Solo administradores', 'forbidden');
+    const denied = requireAdmin(req, auth);
+    if (denied) return denied;
     try {
       const body = await readJsonBody<{ name?: string; priority?: number; isActive?: boolean }>(req);
       updateServiceApiKey(serviceKeyMatch[1] ?? '', {
@@ -74,7 +76,8 @@ export async function handleServiceKeys(
   // ── DELETE /api/service-keys/:id ──────────────────────────────────────────
 
   if (req.method === 'DELETE' && serviceKeyMatch) {
-    if (!isAdmin(auth)) return errorResponse(req, 403, 'Solo administradores', 'forbidden');
+    const denied = requireAdmin(req, auth);
+    if (denied) return denied;
     const deleted = deleteServiceApiKey(serviceKeyMatch[1] ?? '');
     if (!deleted) return errorResponse(req, 404, 'Service key no encontrada', 'not_found');
     await reloadPool('service-key-deleted');

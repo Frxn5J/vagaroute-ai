@@ -1,5 +1,4 @@
 import type { AuthContext } from '../../middlewares/auth';
-import { isAdmin } from '../../middlewares/auth';
 import {
   createCustomProvider,
   deleteCustomProvider,
@@ -12,7 +11,7 @@ import {
 } from '../../core/customProviders';
 import { reloadPool } from '../../core/pool';
 import { randomToken } from '../../utils/crypto';
-import { errorResponse, jsonResponse, readJsonBody, type RouteContext } from '../_shared';
+import { errorResponse, jsonResponse, readJsonBody, requireAdmin, type RouteContext } from '../_shared';
 
 export async function handleCustomProviders(
   req: Request,
@@ -25,14 +24,16 @@ export async function handleCustomProviders(
   // ── GET /api/custom-providers ─────────────────────────────────────────────
 
   if (req.method === 'GET' && pathname === '/api/custom-providers') {
-    if (!isAdmin(auth)) return errorResponse(req, 403, 'Solo administradores', 'forbidden');
+    const denied = requireAdmin(req, auth);
+    if (denied) return denied;
     return jsonResponse(req, { customProviders: listCustomProviders() });
   }
 
   // ── POST /api/custom-providers ────────────────────────────────────────────
 
   if (req.method === 'POST' && pathname === '/api/custom-providers') {
-    if (!isAdmin(auth)) return errorResponse(req, 403, 'Solo administradores', 'forbidden');
+    const denied = requireAdmin(req, auth);
+    if (denied) return denied;
     try {
       const body = await readJsonBody<{
         name: string;
@@ -73,7 +74,8 @@ export async function handleCustomProviders(
   // ── POST /api/custom-providers/discover-models ────────────────────────────
 
   if (req.method === 'POST' && pathname === '/api/custom-providers/discover-models') {
-    if (!isAdmin(auth)) return errorResponse(req, 403, 'Solo administradores', 'forbidden');
+    const denied = requireAdmin(req, auth);
+    if (denied) return denied;
     try {
       const body = await readJsonBody<{
         providerId?: string;
@@ -99,7 +101,8 @@ export async function handleCustomProviders(
   // ── PATCH /api/custom-providers/:id ──────────────────────────────────────
 
   if (req.method === 'PATCH' && customProviderMatch) {
-    if (!isAdmin(auth)) return errorResponse(req, 403, 'Solo administradores', 'forbidden');
+    const denied = requireAdmin(req, auth);
+    if (denied) return denied;
     try {
       const body = await readJsonBody<{
         name?: string;
@@ -133,7 +136,8 @@ export async function handleCustomProviders(
   // ── DELETE /api/custom-providers/:id ─────────────────────────────────────
 
   if (req.method === 'DELETE' && customProviderMatch) {
-    if (!isAdmin(auth)) return errorResponse(req, 403, 'Solo administradores', 'forbidden');
+    const denied = requireAdmin(req, auth);
+    if (denied) return denied;
     const deleted = deleteCustomProvider(customProviderMatch[1] ?? '');
     if (!deleted) return errorResponse(req, 404, 'Proveedor no encontrado', 'not_found');
     await reloadPool('custom-provider-deleted');

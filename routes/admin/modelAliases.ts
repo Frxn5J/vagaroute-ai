@@ -1,5 +1,4 @@
 import type { AuthContext } from '../../middlewares/auth';
-import { isAdmin } from '../../middlewares/auth';
 import {
   deleteModelAlias,
   listModelAliases,
@@ -15,6 +14,7 @@ import {
   errorResponse,
   jsonResponse,
   readJsonBody,
+  requireAdmin,
   type RouteContext,
 } from '../_shared';
 
@@ -30,27 +30,24 @@ export async function handleModelAliases(
   // ── GET /api/model-aliases ─────────────────────────────────────────────────
 
   if (req.method === 'GET' && pathname === '/api/model-aliases') {
-    if (!isAdmin(auth)) {
-      return errorResponse(req, 403, 'Solo administradores', 'forbidden');
-    }
+    const denied = requireAdmin(req, auth);
+    if (denied) return denied;
     return jsonResponse(req, { modelAliases: listModelAliases() });
   }
 
   // ── GET /api/model-aliases/categories ─────────────────────────────────────
 
   if (req.method === 'GET' && pathname === '/api/model-aliases/categories') {
-    if (!isAdmin(auth)) {
-      return errorResponse(req, 403, 'Solo administradores', 'forbidden');
-    }
+    const denied = requireAdmin(req, auth);
+    if (denied) return denied;
     return jsonResponse(req, { categories: getModelAliasCategories() });
   }
 
   // ── POST /api/model-aliases ────────────────────────────────────────────────
 
   if (req.method === 'POST' && pathname === '/api/model-aliases') {
-    if (!isAdmin(auth)) {
-      return errorResponse(req, 403, 'Solo administradores', 'forbidden');
-    }
+    const denied = requireAdmin(req, auth);
+    if (denied) return denied;
     try {
       const body = await readJsonBody<{
         alias: string;
@@ -104,9 +101,8 @@ export async function handleModelAliases(
 
   const aliasMatch = pathname.match(/^\/api\/model-aliases\/(.+)$/);
   if (req.method === 'DELETE' && aliasMatch) {
-    if (!isAdmin(auth)) {
-      return errorResponse(req, 403, 'Solo administradores', 'forbidden');
-    }
+    const denied = requireAdmin(req, auth);
+    if (denied) return denied;
 
     const alias = decodeURIComponent(aliasMatch[1] ?? '').trim().toLowerCase();
     const categoryParam = new URL(req.url).searchParams.get('category');

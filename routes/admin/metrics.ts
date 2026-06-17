@@ -11,6 +11,7 @@ import {
   buildScopedModelTelemetry,
   errorResponse,
   jsonResponse,
+  requireAdmin,
   resolveRequestMetricsScope,
   type RouteContext,
 } from '../_shared';
@@ -33,31 +34,13 @@ export async function handleAdminMetrics(
     });
   }
 
-  // ── POST /api/admin/reset[/:modelName] ────────────────────────────────────
+  // ── POST /api/admin/reset[/:modelName]  +  legacy /admin/reset ────────────
 
-  const adminResetMatch = pathname.match(/^\/api\/admin\/reset(?:\/(.*))?$/);
+  const adminResetMatch = pathname.match(/^(?:\/api)?\/admin\/reset(?:\/(.*))?$/);
   if (req.method === 'POST' && adminResetMatch) {
-    if (!isAdmin(auth)) return errorResponse(req, 403, 'Solo administradores', 'forbidden');
+    const denied = requireAdmin(req, auth);
+    if (denied) return denied;
     const modelName = decodeURIComponent(adminResetMatch[1] ?? '').trim();
-    if (resetStates(modelName || undefined)) {
-      if (modelName) {
-        clearModelRateLimit(modelName);
-      } else {
-        states.forEach((state) => clearModelRateLimit(state.service.name));
-        clearAllProviderRateLimits();
-      }
-      return jsonResponse(req, { ok: true, reset: modelName || 'all' });
-    }
-    return errorResponse(req, 404, `Modelo '${modelName}' no encontrado`, 'not_found');
-  }
-
-  // ── POST /admin/reset (legacy path) ──────────────────────────────────────
-
-  if (req.method === 'POST' && pathname.startsWith('/admin/reset')) {
-    if (!isAdmin(auth)) return errorResponse(req, 403, 'Solo administradores', 'forbidden');
-    const modelName = decodeURIComponent(
-      pathname.replace('/admin/reset/', '').replace('/admin/reset', '').trim(),
-    );
     if (resetStates(modelName || undefined)) {
       if (modelName) {
         clearModelRateLimit(modelName);

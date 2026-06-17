@@ -1,7 +1,7 @@
 import { Mistral } from '@mistralai/mistralai';
 import { withProviderKey } from '../core/providerKeys';
 import type { AIService, ChatRequest } from '../types';
-import { logger } from '../utils/logger';
+import { loadOpenAICompatibleServices } from './_base';
 
 function createMistralService(modelId: string): AIService {
   return {
@@ -62,27 +62,9 @@ function createMistralService(modelId: string): AIService {
 }
 
 export async function loadMistralServices(): Promise<AIService[]> {
-  try {
-    const models = await withProviderKey('mistral', async ({ key }) => {
-      const response = await fetch('https://api.mistral.ai/v1/models', {
-        headers: { Authorization: `Bearer ${key}` },
-      });
-
-      if (!response.ok) {
-        throw new Error(`Mistral models HTTP ${response.status}`);
-      }
-
-      const data = await response.json() as {
-        data?: Array<{ id: string }>;
-      };
-
-      return (data.data ?? []).map((model) => createMistralService(model.id));
-    });
-
-    logger.info({ provider: 'mistral', count: models.length }, 'Mistral models loaded');
-    return models;
-  } catch (err) {
-    logger.warn({ err }, 'Mistral models could not be loaded');
-    return [];
-  }
+  return loadOpenAICompatibleServices(
+    'mistral',
+    'https://api.mistral.ai/v1/models',
+    (models) => models.map((model) => createMistralService(model.id)),
+  );
 }
