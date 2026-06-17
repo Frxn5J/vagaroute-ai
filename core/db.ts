@@ -290,13 +290,6 @@ interface AppSettingRow {
   updated_at: number;
 }
 
-interface ProviderStatRow {
-  id: string;
-  status: string;
-  cooldown_until: number;
-  last_reason: string | null;
-}
-
 interface RateLimitRuleRow {
   scope_type: RateLimitScopeType;
   scope_id: string;
@@ -529,13 +522,6 @@ export interface ServiceApiKeyCandidate extends ServiceApiKeyRecord {
 }
 
 export type RateLimitScopeType = 'provider' | 'model';
-
-export interface ProviderStatRecord {
-  id: string;
-  status: string;
-  cooldownUntil: number;
-  lastReason: string | null;
-}
 
 export interface RateLimitRuleRecord {
   scopeType: RateLimitScopeType;
@@ -932,15 +918,6 @@ function toServiceApiKeyRecord(row: ServiceApiKeyRow): ServiceApiKeyRecord {
   };
 }
 
-function toProviderStatRecord(row: ProviderStatRow): ProviderStatRecord {
-  return {
-    id: row.id,
-    status: row.status,
-    cooldownUntil: row.cooldown_until,
-    lastReason: row.last_reason,
-  };
-}
-
 function toRateLimitRuleRecord(row: RateLimitRuleRow): RateLimitRuleRecord {
   return {
     scopeType: row.scope_type,
@@ -1011,137 +988,8 @@ function computeUsageStatus(
   return 'ok';
 }
 
-export function syncModelsToDb(models: { id: string; provider: string }[]) {
-  const insertOrIgnore = db.prepare(`
-    INSERT INTO model_stats (id, provider, status, rate_limited_until, requests_served)
-    VALUES ($id, $provider, 'active', 0, 0)
-    ON CONFLICT(id) DO NOTHING
-  `);
-
-  db.transaction(() => {
-    for (const model of models) {
-      insertOrIgnore.run({ $id: model.id, $provider: model.provider });
-    }
-  })();
-}
-
-export function syncProvidersToDb(providers: string[]) {
-  const insertOrIgnore = db.prepare(`
-    INSERT INTO provider_stats (id, status, cooldown_until, last_reason)
-    VALUES ($id, 'active', 0, NULL)
-    ON CONFLICT(id) DO NOTHING
-  `);
-
-  const normalizedProviders = Array.from(new Set(
-    providers
-      .map((provider) => normalizeProviderId(provider))
-      .filter(Boolean),
-  ));
-
-  db.transaction(() => {
-    for (const provider of normalizedProviders) {
-      insertOrIgnore.run({ $id: provider });
-    }
-  })();
-}
-
-export function clearExpiredProviderRateLimits(): void {
-  db.query(`
-    UPDATE provider_stats
-    SET status = 'active', cooldown_until = 0, last_reason = NULL
-    WHERE cooldown_until > 0 AND cooldown_until <= $now
-  `).run({ $now: Date.now() });
-}
-
-export function getAllProviderStats(): ProviderStatRecord[] {
-  clearExpiredProviderRateLimits();
-  const rows = db.query(`SELECT * FROM provider_stats ORDER BY id ASC`).all() as ProviderStatRow[];
-  return rows.map(toProviderStatRecord);
-}
-
-export function getProviderCooldownMap(): Map<string, ProviderStatRecord> {
-  return new Map(getAllProviderStats().map((item) => [item.id, item]));
-}
-
-export function setProviderRateLimited(providerId: string, untilMs: number, reason?: string): void {
-  const normalized = normalizeProviderId(providerId);
-  db.query(`
-    INSERT INTO provider_stats (id, status, cooldown_until, last_reason)
-    VALUES ($id, 'cooldown', $cooldownUntil, $reason)
-    ON CONFLICT(id) DO UPDATE
-    SET status = 'cooldown', cooldown_until = excluded.cooldown_until, last_reason = excluded.last_reason
-  `).run({
-    $id: normalized,
-    $cooldownUntil: untilMs,
-    $reason: reason ?? null,
-  });
-}
-
-export function clearProviderRateLimit(providerId: string): void {
-  db.query(`
-    UPDATE provider_stats
-    SET status = 'active', cooldown_until = 0, last_reason = NULL
-    WHERE id = $id
-  `).run({ $id: normalizeProviderId(providerId) });
-}
-
-export function clearAllProviderRateLimits(): void {
-  db.query(`
-    UPDATE provider_stats
-    SET status = 'active', cooldown_until = 0, last_reason = NULL
-  `).run();
-}
-
-export function getAllModelStats() {
-  return db.query(`SELECT * FROM model_stats`).all() as {
-    id: string;
-    provider: string;
-    status: string;
-    rate_limited_until: number;
-    requests_served: number;
-  }[];
-}
-
-export function setModelRateLimited(id: string, untilMs: number) {
-  db.query(`
-    UPDATE model_stats
-    SET status = 'cooldown', rate_limited_until = $until
-    WHERE id = $id
-  `).run({ $until: untilMs, $id: id });
-}
-
-export function clearModelRateLimit(id: string) {
-  db.query(`
-    UPDATE model_stats
-    SET status = 'active', rate_limited_until = 0
-    WHERE id = $id
-  `).run({ $id: id });
-}
-
-export function getAvailableModels() {
-  const now = Date.now();
-  db.query(`
-    UPDATE model_stats
-    SET status = 'active', rate_limited_until = 0
-    WHERE status = 'cooldown' AND rate_limited_until <= $now
-  `).run({ $now: now });
-
-  return db.query(`SELECT * FROM model_stats WHERE status = 'active'`).all() as {
-    id: string;
-    provider: string;
-    status: string;
-    rate_limited_until: number;
-    requests_served: number;
-  }[];
-}
-
-export function incrementModelUsage(id: string) {
-  db.query(`
-    UPDATE model_stats
-    SET requests_served = requests_served + 1
-    WHERE id = $id
-  `).run({ $id: id });
-}
+// model_stats y provider_stats viven en ./db/modelStats y ./db/providerStats
+// (re-exportados al final de este archivo).
 
 export function getAppSettings(): AppSettings {
   const rows = db.query(`SELECT key, value, updated_at FROM app_settings`).all() as AppSettingRow[];
@@ -3048,46 +2896,6 @@ export function getDashboardMetrics(scope?: RequestMetricsScope): DashboardMetri
 
 // ─── Model Tier Overrides ─────────────────────────────────────────────────────
 
-export interface ModelTierOverride {
-  modelId: string;
-  tier: 1 | 2 | 3;
-  updatedAt: number;
-}
-
-export function listModelTierOverrides(): ModelTierOverride[] {
-  return (db.query(
-    'SELECT model_id, tier, updated_at FROM model_tier_overrides ORDER BY model_id ASC',
-  ).all() as Array<{ model_id: string; tier: number; updated_at: number }>).map((row) => ({
-    modelId: row.model_id,
-    tier: row.tier as 1 | 2 | 3,
-    updatedAt: row.updated_at,
-  }));
-}
-
-export function getModelTierOverridesMap(): Map<string, 1 | 2 | 3> {
-  const rows = db.query(
-    'SELECT model_id, tier FROM model_tier_overrides',
-  ).all() as Array<{ model_id: string; tier: number }>;
-  return new Map(rows.map((row) => [row.model_id, row.tier as 1 | 2 | 3]));
-}
-
-export function upsertModelTierOverride(modelId: string, tier: 1 | 2 | 3): void {
-  db.query(`
-    INSERT INTO model_tier_overrides (model_id, tier, updated_at)
-    VALUES (?, ?, ?)
-    ON CONFLICT(model_id) DO UPDATE SET
-      tier = excluded.tier,
-      updated_at = excluded.updated_at
-  `).run(modelId, tier, Date.now());
-}
-
-export function deleteModelTierOverride(modelId: string): boolean {
-  const result = db.query(
-    'DELETE FROM model_tier_overrides WHERE model_id = ?',
-  ).run(modelId);
-  return result.changes > 0;
-}
-
 // ─── Model Aliases (simple compatibility aliases) ───────────────────────────
 
 export type ModelAliasCategory = 'chat' | 'images' | 'imageEdit' | 'videos';
@@ -3231,3 +3039,10 @@ export function deleteModelAlias(alias: string, category: ModelAliasCategory): b
   ).run({ $alias: alias.trim().toLowerCase(), $category: category });
   return result.changes > 0;
 }
+
+// ─── Dominios extraídos ─────────────────────────────────────────────────────
+// Re-exportados para preservar `import { ... } from '../core/db'` sin cambios.
+// Las funciones usan `db` solo en runtime, así que el ciclo de re-export es seguro.
+export * from './db/modelStats';
+export * from './db/providerStats';
+export * from './db/modelTiers';
