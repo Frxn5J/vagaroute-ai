@@ -1,7 +1,7 @@
 import OpenAI from 'openai';
 import { withProviderKey } from '../core/providerKeys';
 import type { AIService, ChatRequest } from '../types';
-import { logger } from '../utils/logger';
+import { loadOpenAICompatibleServices, reEmitSSE } from './_base';
 
 const QWEN_BASE_URL = 'https://qwen.aikit.club/v1';
 
@@ -101,39 +101,19 @@ function createQwenChatService({ id: modelId }: QwenModel): AIService {
           ...(typeof extras.thinking_budget === 'number' && { thinking_budget: extras.thinking_budget as never }),
         });
 
-        return (async function* () {
-          for await (const chunk of stream) {
-            yield `data: ${JSON.stringify({ ...chunk, id, model: serviceName })}\n\n`;
-          }
-          yield 'data: [DONE]\n\n';
-        })();
+        return reEmitSSE(stream, id, serviceName);
       });
     },
   };
 }
 
 export async function loadQwenChatServices(): Promise<AIService[]> {
-  try {
-    const services = await withProviderKey('qwenchat', async ({ key }) => {
-      const response = await fetch(`${QWEN_BASE_URL}/models`, {
-        headers: { Authorization: `Bearer ${key}` },
-        signal: AbortSignal.timeout(10_000),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Qwen Chat models HTTP ${response.status}`);
-      }
-
-      const body = await response.json() as { data?: QwenModel[] };
-      return (body.data ?? [])
-        .filter((model) => Boolean(model.id) && isChatCapableModel(model.id))
-        .map((model) => createQwenChatService(model));
-    });
-
-    logger.info({ provider: 'qwenchat', count: services.length }, 'Qwen Chat models loaded');
-    return services;
-  } catch (err) {
-    logger.warn({ err }, 'Qwen Chat models could not be loaded');
-    return [];
-  }
+  return loadOpenAICompatibleServices(
+    'qwenchat',
+    `${QWEN_BASE_URL}/models`,
+    (models) => models
+      .filter((model) => Boolean(model.id) && isChatCapableModel(model.id))
+      .map((model) => createQwenChatService(model)),
+    { signal: AbortSignal.timeout(10_000) },
+  );
 }

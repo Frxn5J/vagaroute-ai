@@ -1,7 +1,7 @@
 import OpenAI from 'openai';
 import { withProviderKey } from '../core/providerKeys';
 import type { AIService, ChatRequest } from '../types';
-import { logger } from '../utils/logger';
+import { loadOpenAICompatibleServices, reEmitSSE } from './_base';
 
 function createAlibabaService({
   id: model,
@@ -12,8 +12,9 @@ function createAlibabaService({
   supportsTools: boolean;
   supportsVision?: boolean;
 }): AIService {
+  const name = `Alibaba/${model}`;
   return {
-    name: `Alibaba/${model}`,
+    name,
     supportsTools,
     supportsVision,
     async chat(request: ChatRequest, id: string) {
@@ -43,47 +44,24 @@ function createAlibabaService({
           ...(supportsTools && tool_choice !== undefined && { tool_choice }),
         });
 
-        return (async function* () {
-          for await (const chunk of stream) {
-            yield `data: ${JSON.stringify({ ...chunk, id, model: `Alibaba/${model}` })}\n\n`;
-          }
-          yield 'data: [DONE]\n\n';
-        })();
+        return reEmitSSE(stream, id, name);
       });
     },
   };
 }
 
 export async function loadAlibabaServices(): Promise<AIService[]> {
-  try {
-    const models = await withProviderKey('alibaba', async ({ key }) => {
-      const response = await fetch('https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models', {
-        headers: { Authorization: `Bearer ${key}` },
-      });
-
-      if (!response.ok) {
-        throw new Error(`Alibaba models HTTP ${response.status}`);
-      }
-
-      const data = await response.json() as {
-        data?: Array<{ id: string }>;
-      };
-
-      return (data.data ?? []).map((model) => createAlibabaService({
-        id: model.id,
-        supportsTools:
-          !model.id.includes('-vl-')
-          && !model.id.includes('-mt-')
-          && !model.id.startsWith('wan')
-          && !model.id.startsWith('qvq'),
-        supportsVision: model.id.includes('-vl-'),
-      }));
-    });
-
-    logger.info({ provider: 'alibaba', count: models.length }, 'Alibaba models loaded');
-    return models;
-  } catch (err) {
-    logger.warn({ err }, 'Alibaba models could not be loaded');
-    return [];
-  }
+  return loadOpenAICompatibleServices(
+    'alibaba',
+    'https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models',
+    (models) => models.map((model) => createAlibabaService({
+      id: model.id,
+      supportsTools:
+        !model.id.includes('-vl-')
+        && !model.id.includes('-mt-')
+        && !model.id.startsWith('wan')
+        && !model.id.startsWith('qvq'),
+      supportsVision: model.id.includes('-vl-'),
+    })),
+  );
 }

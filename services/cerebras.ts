@@ -1,7 +1,7 @@
 import Cerebras from '@cerebras/cerebras_cloud_sdk';
 import { withProviderKey } from '../core/providerKeys';
 import type { AIService, ChatRequest } from '../types';
-import { logger } from '../utils/logger';
+import { loadOpenAICompatibleServices, reEmitSSE } from './_base';
 
 function createCerebrasService({
   id: model,
@@ -10,8 +10,9 @@ function createCerebrasService({
   id: string;
   supportsTools: boolean;
 }): AIService {
+  const name = `Cerebras/${model}`;
   return {
-    name: `Cerebras/${model}`,
+    name,
     supportsTools,
     async chat(request: ChatRequest, id: string) {
       return withProviderKey('cerebras', async ({ key }) => {
@@ -37,41 +38,16 @@ function createCerebrasService({
           ...(supportsTools && tool_choice !== undefined && { tool_choice }),
         });
 
-        return (async function* () {
-          for await (const chunk of stream) {
-            yield `data: ${JSON.stringify({ ...(chunk as object), id, model: `Cerebras/${model}` })}\n\n`;
-          }
-          yield 'data: [DONE]\n\n';
-        })();
+        return reEmitSSE(stream as AsyncIterable<unknown>, id, name);
       });
     },
   };
 }
 
 export async function loadCerebrasServices(): Promise<AIService[]> {
-  try {
-    const models = await withProviderKey('cerebras', async ({ key }) => {
-      const response = await fetch('https://api.cerebras.ai/v1/models', {
-        headers: { Authorization: `Bearer ${key}` },
-      });
-      if (!response.ok) {
-        throw new Error(`Cerebras models HTTP ${response.status}`);
-      }
-
-      const data = await response.json() as {
-        data?: Array<{ id: string }>;
-      };
-
-      return (data.data ?? []).map((model) => createCerebrasService({
-        id: model.id,
-        supportsTools: true,
-      }));
-    });
-
-    logger.info({ provider: 'cerebras', count: models.length }, 'Cerebras models loaded');
-    return models;
-  } catch (err) {
-    logger.warn({ err }, 'Cerebras models could not be loaded');
-    return [];
-  }
+  return loadOpenAICompatibleServices(
+    'cerebras',
+    'https://api.cerebras.ai/v1/models',
+    (models) => models.map((model) => createCerebrasService({ id: model.id, supportsTools: true })),
+  );
 }

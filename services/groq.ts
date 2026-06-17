@@ -1,7 +1,7 @@
 import { Groq } from 'groq-sdk';
 import { withProviderKey } from '../core/providerKeys';
 import type { AIService, ChatRequest } from '../types';
-import { logger } from '../utils/logger';
+import { loadOpenAICompatibleServices, reEmitSSE } from './_base';
 
 function createGroqService({
   id: model,
@@ -12,8 +12,9 @@ function createGroqService({
   supportsTools: boolean;
   supportsVision?: boolean;
 }): AIService {
+  const name = `Groq/${model}`;
   return {
-    name: `Groq/${model}`,
+    name,
     supportsTools,
     supportsVision,
     async chat(request: ChatRequest, id: string) {
@@ -42,42 +43,22 @@ function createGroqService({
           ...(request.response_format && { response_format: request.response_format }),
         });
 
-        return (async function* () {
-          for await (const chunk of stream) {
-            yield `data: ${JSON.stringify({ ...chunk, id, model: `Groq/${model}` })}\n\n`;
-          }
-          yield 'data: [DONE]\n\n';
-        })();
+        return reEmitSSE(stream, id, name);
       });
     },
   };
 }
 
 export async function loadGroqServices(): Promise<AIService[]> {
-  try {
-    const models = await withProviderKey('groq', async ({ key }) => {
-      const res = await fetch('https://api.groq.com/openai/v1/models', {
-        headers: { Authorization: `Bearer ${key}` },
-      });
-      if (!res.ok) {
-        throw new Error(`Groq models HTTP ${res.status}`);
-      }
-      const data = await res.json() as {
-        data?: Array<{ id: string }>;
-      };
-      return (data.data ?? [])
-        .filter((model) => !model.id.includes('whisper'))
-        .map((model) => createGroqService({
-          id: model.id,
-          supportsTools: !model.id.includes('gpt-oss') && !model.id.includes('deepseek-r1'),
-          supportsVision: model.id.includes('vision') || model.id.includes('llava'),
-        }));
-    });
-
-    logger.info({ provider: 'groq', count: models.length }, 'Groq models loaded');
-    return models;
-  } catch (err) {
-    logger.warn({ err }, 'Groq models could not be loaded');
-    return [];
-  }
+  return loadOpenAICompatibleServices(
+    'groq',
+    'https://api.groq.com/openai/v1/models',
+    (models) => models
+      .filter((model) => !model.id.includes('whisper'))
+      .map((model) => createGroqService({
+        id: model.id,
+        supportsTools: !model.id.includes('gpt-oss') && !model.id.includes('deepseek-r1'),
+        supportsVision: model.id.includes('vision') || model.id.includes('llava'),
+      })),
+  );
 }

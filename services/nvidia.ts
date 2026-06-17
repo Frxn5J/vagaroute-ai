@@ -1,7 +1,7 @@
 import OpenAI from 'openai';
 import { withProviderKey } from '../core/providerKeys';
 import type { AIService, ChatRequest } from '../types';
-import { logger } from '../utils/logger';
+import { loadOpenAICompatibleServices, reEmitSSE } from './_base';
 
 function createNvidiaService({
   id: model,
@@ -10,8 +10,9 @@ function createNvidiaService({
   id: string;
   supportsTools: boolean;
 }): AIService {
+  const name = `NVIDIA/${model}`;
   return {
-    name: `NVIDIA/${model}`,
+    name,
     supportsTools,
     async chat(request: ChatRequest, id: string) {
       return withProviderKey('nvidia', async ({ key }) => {
@@ -38,42 +39,16 @@ function createNvidiaService({
           ...(supportsTools && tool_choice !== undefined && { tool_choice }),
         });
 
-        return (async function* () {
-          for await (const chunk of stream) {
-            yield `data: ${JSON.stringify({ ...chunk, id, model: `NVIDIA/${model}` })}\n\n`;
-          }
-          yield 'data: [DONE]\n\n';
-        })();
+        return reEmitSSE(stream, id, name);
       });
     },
   };
 }
 
 export async function loadNvidiaServices(): Promise<AIService[]> {
-  try {
-    const models = await withProviderKey('nvidia', async ({ key }) => {
-      const response = await fetch('https://integrate.api.nvidia.com/v1/models', {
-        headers: { Authorization: `Bearer ${key}` },
-      });
-
-      if (!response.ok) {
-        throw new Error(`NVIDIA models HTTP ${response.status}`);
-      }
-
-      const data = await response.json() as {
-        data?: Array<{ id: string }>;
-      };
-
-      return (data.data ?? []).map((model) => createNvidiaService({
-        id: model.id,
-        supportsTools: true,
-      }));
-    });
-
-    logger.info({ provider: 'nvidia', count: models.length }, 'NVIDIA models loaded');
-    return models;
-  } catch (err) {
-    logger.warn({ err }, 'NVIDIA models could not be loaded');
-    return [];
-  }
+  return loadOpenAICompatibleServices(
+    'nvidia',
+    'https://integrate.api.nvidia.com/v1/models',
+    (models) => models.map((m) => createNvidiaService({ id: m.id, supportsTools: true })),
+  );
 }
